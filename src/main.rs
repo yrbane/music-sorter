@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod models;
 mod scanner;
+mod tags;
 
 use clap::Parser;
 
