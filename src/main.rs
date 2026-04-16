@@ -6,6 +6,7 @@ mod fingerprint;
 mod models;
 mod musicbrainz;
 mod rate_limiter;
+mod organizer;
 mod scanner;
 mod tags;
 
