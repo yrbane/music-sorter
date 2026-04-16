@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod coverart;
 mod discogs;
+mod enricher;
 mod fingerprint;
 mod models;
 mod musicbrainz;
