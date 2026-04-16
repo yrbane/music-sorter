@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod fingerprint;
 mod models;
+mod musicbrainz;
 mod rate_limiter;
 mod scanner;
 mod tags;
