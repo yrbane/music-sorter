@@ -14,6 +14,18 @@ use crate::rate_limiter::RateLimiter;
 use crate::tags;
 
 /// Orchestre l'enrichissement des métadonnées audio via MusicBrainz, AcoustID, Cover Art Archive et Discogs
+/// Écrase artiste et album avec les noms canoniques de la DB,
+/// puis fusionne le reste (remplit les champs manquants)
+fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo) {
+    if db_info.artist.is_some() {
+        info.artist.clone_from(&db_info.artist);
+    }
+    if db_info.album.is_some() {
+        info.album.clone_from(&db_info.album);
+    }
+    info.merge(db_info);
+}
+
 pub struct Enricher {
     musicbrainz: MusicBrainzClient,
     discogs: Option<DiscogsClient>,
@@ -71,7 +83,8 @@ impl Enricher {
                         if let Ok(Some((mb_info, rid))) =
                             self.musicbrainz.lookup_by_recording_id(&recording_id)
                         {
-                            info.merge(&mb_info);
+                            // Préférer le nom canonique de la DB pour artiste et album
+                            override_from_db(&mut info, &mb_info);
                             release_id = rid;
                         }
                     }
@@ -85,7 +98,8 @@ impl Enricher {
             let title = info.title.as_deref().unwrap();
 
             if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text(artist, title) {
-                info.merge(&mb_info);
+                // Préférer le nom canonique de la DB pour artiste et album
+                override_from_db(&mut info, &mb_info);
                 release_id = Some(rid);
             }
         }
@@ -115,7 +129,7 @@ impl Enricher {
 
                         if let Some(ref url) = resource_url {
                             if let Ok(Some(details)) = discogs.get_release_details(url) {
-                                // Enrichir avec les détails Discogs
+                                // Préférer le nom canonique Discogs pour artiste et album
                                 let details_info = TrackInfo {
                                     artist: details.artist,
                                     album: details.album,
@@ -123,7 +137,7 @@ impl Enricher {
                                     genre: details.genre,
                                     ..Default::default()
                                 };
-                                info.merge(&details_info);
+                                override_from_db(&mut info, &details_info);
 
                                 if info.cover_art.is_none() {
                                     if let Some(ref cover_url) = details.cover_url {
