@@ -22,6 +22,22 @@ fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
+/// Cherche un dossier existant dont le nom correspond (case-insensitive)
+/// et retourne son nom exact. Sinon retourne le nom proposé.
+fn resolve_existing_folder(target: &Path, proposed: &str) -> String {
+    let proposed_lower = proposed.to_lowercase();
+    if let Ok(entries) = std::fs::read_dir(target) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.to_lowercase() == proposed_lower {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+    proposed.to_string()
+}
+
 /// Construit le chemin de destination d'un fichier audio
 pub fn build_destination_path(target: &Path, info: &TrackInfo, original_path: &Path) -> PathBuf {
     // Récupère l'extension du fichier original
@@ -48,6 +64,9 @@ pub fn build_destination_path(target: &Path, info: &TrackInfo, original_path: &P
         Some(year) => format!("{} - {} - {}", artist, year, album),
         None => format!("{} - {}", artist, album),
     };
+
+    // Réutilise un dossier existant si seule la casse diffère
+    let folder_name = resolve_existing_folder(target, &folder_name);
 
     // Nom de fichier : [NN] - [title].[ext]  ou  [title].[ext]
     let file_name = match info.track_number {
@@ -167,6 +186,32 @@ mod tests {
         let result = build_destination_path(target, &info, original);
 
         assert_eq!(result, Path::new("/music/_unsorted/unknown.mp3"));
+    }
+
+    #[test]
+    fn test_build_destination_reuses_existing_folder_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let target = dir.path();
+
+        // Créer un dossier existant avec "Boards Of Canada"
+        std::fs::create_dir_all(target.join("Boards Of Canada - 2002 - Geogaddi")).unwrap();
+
+        // Un fichier avec "Boards of Canada" (o minuscule) doit réutiliser le dossier existant
+        let info = TrackInfo {
+            artist: Some("Boards of Canada".into()),
+            album: Some("Geogaddi".into()),
+            title: Some("Music Is Math".into()),
+            year: Some(2002),
+            track_number: Some(2),
+            ..Default::default()
+        };
+
+        let result = build_destination_path(target, &info, Path::new("song.flac"));
+
+        assert_eq!(
+            result,
+            target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
+        );
     }
 
     #[test]
