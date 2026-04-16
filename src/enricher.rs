@@ -115,9 +115,16 @@ impl Enricher {
 
                         if let Some(ref url) = resource_url {
                             if let Ok(Some(details)) = discogs.get_release_details(url) {
-                                if info.genre.is_none() {
-                                    info.genre = details.genre;
-                                }
+                                // Enrichir avec les détails Discogs
+                                let details_info = TrackInfo {
+                                    artist: details.artist,
+                                    album: details.album,
+                                    year: details.year,
+                                    genre: details.genre,
+                                    ..Default::default()
+                                };
+                                info.merge(&details_info);
+
                                 if info.cover_art.is_none() {
                                     if let Some(ref cover_url) = details.cover_url {
                                         if let Ok(cover_data) = discogs.fetch_image(cover_url) {

@@ -16,11 +16,13 @@ pub struct ReleaseDetails {
     pub album: Option<String>,
     pub year: Option<u32>,
     pub genre: Option<String>,
+    #[allow(dead_code)]
     pub tracks: Vec<DiscogsTrack>,
     pub cover_url: Option<String>,
 }
 
 /// Piste issue de la tracklist Discogs
+#[allow(dead_code)]
 pub struct DiscogsTrack {
     pub position: String,
     pub title: String,

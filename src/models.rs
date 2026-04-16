@@ -13,6 +13,7 @@ pub struct TrackInfo {
 
 /// Résultat du traitement d'un fichier
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ProcessResult {
     Organized { from: std::path::PathBuf, to: std::path::PathBuf },
     ConflictResolved { path: std::path::PathBuf, kept_bitrate: u32 },
