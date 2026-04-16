@@ -1,5 +1,7 @@
 mod cli;
 mod config;
+mod coverart;
+mod discogs;
 mod fingerprint;
 mod models;
 mod musicbrainz;
