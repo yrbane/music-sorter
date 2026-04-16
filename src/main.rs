@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod fingerprint;
 mod models;
 mod scanner;
 mod tags;
