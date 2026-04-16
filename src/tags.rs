@@ -15,25 +15,26 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
     // Récupère le tag principal ou le premier tag disponible
     let tag = tagged_file
         .primary_tag()
-        .or_else(|| tagged_file.first_tag())
-        .with_context(|| format!("Aucun tag trouvé dans : {}", path.display()))?;
+        .or_else(|| tagged_file.first_tag());
 
-    // Extrait l'image de couverture si présente
-    let cover_art = tag
-        .pictures()
-        .first()
-        .map(|pic| pic.data().to_vec());
+    let info = match tag {
+        Some(tag) => {
+            let cover_art = tag.pictures().first().map(|pic| pic.data().to_vec());
+            TrackInfo {
+                artist: tag.artist().map(|v| v.into_owned()),
+                album: tag.album().map(|v| v.into_owned()),
+                title: tag.title().map(|v| v.into_owned()),
+                year: tag.year(),
+                track_number: tag.track(),
+                total_tracks: tag.track_total(),
+                genre: tag.genre().map(|v| v.into_owned()),
+                cover_art,
+            }
+        }
+        None => TrackInfo::default(),
+    };
 
-    Ok(TrackInfo {
-        artist: tag.artist().map(|v| v.into_owned()),
-        album: tag.album().map(|v| v.into_owned()),
-        title: tag.title().map(|v| v.into_owned()),
-        year: tag.year(),
-        track_number: tag.track(),
-        total_tracks: tag.track_total(),
-        genre: tag.genre().map(|v| v.into_owned()),
-        cover_art,
-    })
+    Ok(info)
 }
 
 /// Retourne le bitrate audio en kbps
