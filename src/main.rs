@@ -19,21 +19,18 @@ use clap::Parser;
 use colored::*;
 
 fn main() -> Result<()> {
-    let args = cli::Args::parse();
     let config = config::Config::load()?;
+    let args = cli::Args::parse().resolve(&config);
 
-    let source = args.source_path();
-    let target = args.target_path();
+    println!("{} {}", "Source:".bold(), args.source.display());
+    println!("{} {}", "Destination:".bold(), args.target.display());
 
-    println!("{} {}", "Source:".bold(), source.display());
-    println!("{} {}", "Destination:".bold(), target.display());
-
-    if !source.exists() {
-        eprintln!("{} Le dossier source n'existe pas : {}", "✗".red().bold(), source.display());
+    if !args.source.exists() {
+        eprintln!("{} Le dossier source n'existe pas : {}", "✗".red().bold(), args.source.display());
         std::process::exit(1);
     }
 
-    let files = scanner::scan(&source);
+    let files = scanner::scan(&args.source);
     println!("\n{} fichiers audio trouvés\n", files.len().to_string().bold());
 
     if files.is_empty() {
@@ -44,9 +41,9 @@ fn main() -> Result<()> {
     let enricher = Enricher::new(&config)?;
 
     let results: Vec<ProcessResult> = if args.workers > 1 {
-        process_parallel(&files, &enricher, &target, args.r#move, args.workers)
+        process_parallel(&files, &enricher, &args.target, args.do_move, args.workers)
     } else {
-        process_sequential(&files, &enricher, &target, args.r#move)
+        process_sequential(&files, &enricher, &args.target, args.do_move)
     };
 
     print_summary(&results);

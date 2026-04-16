@@ -6,6 +6,10 @@ use std::path::PathBuf;
 pub struct Config {
     pub discogs_token: Option<String>,
     pub acoustid_api_key: Option<String>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub workers: Option<usize>,
+    pub r#move: Option<bool>,
 }
 
 impl Config {
