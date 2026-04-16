@@ -8,6 +8,7 @@ mod models;
 mod musicbrainz;
 mod organizer;
 mod rate_limiter;
+mod retry;
 mod scanner;
 mod tags;
 
