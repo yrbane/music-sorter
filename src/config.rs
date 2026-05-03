@@ -10,6 +10,8 @@ pub struct Config {
     pub target: Option<String>,
     pub workers: Option<usize>,
     pub r#move: Option<bool>,
+    pub cache_enabled: Option<bool>,         // défaut true
+    pub api_cache_ttl_days: Option<u32>,     // défaut 30 — non utilisé pour l'instant
 }
 
 impl Config {
@@ -79,5 +81,16 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.discogs_token, None);
+    }
+
+    #[test]
+    fn test_parse_cache_options() {
+        let toml = r#"
+cache_enabled = false
+api_cache_ttl_days = 7
+"#;
+        let c = Config::from_str(toml).unwrap();
+        assert_eq!(c.cache_enabled, Some(false));
+        assert_eq!(c.api_cache_ttl_days, Some(7));
     }
 }

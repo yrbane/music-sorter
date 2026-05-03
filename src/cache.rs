@@ -152,6 +152,16 @@ impl Cache {
         Ok(())
     }
 
+    /// Ouvre un cache SQLite éphémère en mémoire (utile quand cache_enabled = false).
+    /// Aucun fichier n'est créé sur disque.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        Self::init_schema(&conn)?;
+        Ok(Self { conn: std::sync::Mutex::new(conn) })
+    }
+
     pub fn open(target: &Path) -> Result<Self> {
         let db_path = target.join(".music-sorter.db");
         std::fs::create_dir_all(target)?;
@@ -294,6 +304,14 @@ mod tests {
         ).unwrap();
         let r = cache.lookup_api("mb", "k", 86400).unwrap();
         assert!(r.is_none(), "entrée datée de 1970 doit être expirée");
+    }
+
+    #[test]
+    fn test_open_in_memory_creates_schema() {
+        let cache = Cache::open_in_memory().unwrap();
+        cache.record_processed("/foo", 1, 2, Some("/dest"), "organized").unwrap();
+        let r = cache.lookup_processed("/foo", 1, 2).unwrap();
+        assert_eq!(r, Some(("organized".into(), Some("/dest".into()))));
     }
 
     #[test]

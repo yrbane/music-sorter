@@ -36,8 +36,13 @@ fn main() -> Result<()> {
     }
 
     // Création de la destination + ouverture du cache SQLite partagé
-    std::fs::create_dir_all(&args.target)?;
-    let cache = Arc::new(cache::Cache::open(&args.target)?);
+    let cache = if config.cache_enabled.unwrap_or(true) {
+        std::fs::create_dir_all(&args.target)?;
+        Arc::new(cache::Cache::open(&args.target)?)
+    } else {
+        println!("{}", "Cache désactivé (cache_enabled = false)".dimmed());
+        Arc::new(cache::Cache::open_in_memory()?)
+    };
 
     let files = scanner::scan(&args.source);
     println!("\n{} fichiers audio trouvés\n", files.len().to_string().bold());
