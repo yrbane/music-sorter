@@ -20,6 +20,7 @@ use crate::models::ProcessResult;
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     let config = config::Config::load()?;
@@ -33,6 +34,10 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Création de la destination + ouverture du cache SQLite partagé
+    std::fs::create_dir_all(&args.target)?;
+    let cache = Arc::new(cache::Cache::open(&args.target)?);
+
     let files = scanner::scan(&args.source);
     println!("\n{} fichiers audio trouvés\n", files.len().to_string().bold());
 
@@ -41,19 +46,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let enricher = Enricher::new(&config)?;
+    let enricher = Enricher::new(&config, cache.clone())?;
 
     let results: Vec<ProcessResult> = if args.workers > 1 {
         process_parallel(
             &files,
             &enricher,
+            &cache,
             &args.source,
             &args.target,
             args.do_move,
             args.workers,
         )
     } else {
-        process_sequential(&files, &enricher, &args.source, &args.target, args.do_move)
+        process_sequential(&files, &enricher, &cache, &args.source, &args.target, args.do_move)
     };
 
     print_summary(&results);
@@ -63,19 +69,21 @@ fn main() -> Result<()> {
 fn process_sequential(
     files: &[std::path::PathBuf],
     enricher: &Enricher,
+    cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
 ) -> Vec<ProcessResult> {
     files
         .iter()
-        .map(|file| process_file(file, enricher, source, target, do_move))
+        .map(|file| process_file(file, enricher, cache, source, target, do_move))
         .collect()
 }
 
 fn process_parallel(
     files: &[std::path::PathBuf],
     enricher: &Enricher,
+    cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
@@ -91,7 +99,7 @@ fn process_parallel(
     pool.install(|| {
         files
             .par_iter()
-            .map(|file| process_file(file, enricher, source, target, do_move))
+            .map(|file| process_file(file, enricher, cache, source, target, do_move))
             .collect()
     })
 }
@@ -99,16 +107,52 @@ fn process_parallel(
 fn process_file(
     file: &std::path::Path,
     enricher: &Enricher,
+    cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
 ) -> ProcessResult {
     let filename = file.file_name().unwrap_or_default().to_string_lossy();
 
+    // Lecture des métadonnées du fichier source pour clé de cache (mtime + size)
+    let metadata = match std::fs::metadata(file) {
+        Ok(m) => m,
+        Err(_) => {
+            return ProcessResult::Error {
+                path: file.to_path_buf(),
+                reason: "Impossible de lire les métadonnées du fichier".into(),
+            };
+        }
+    };
+    let mtime = metadata.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let size = metadata.len() as i64;
+    let source_str = file.to_string_lossy().into_owned();
+
+    // Skip total si déjà organisé et la destination existe encore
+    if let Ok(Some((status, dest_opt))) = cache.lookup_processed(&source_str, mtime, size) {
+        if status == "organized" {
+            if let Some(d) = dest_opt {
+                let dest_pb = std::path::PathBuf::from(d);
+                if dest_pb.exists() {
+                    println!("  {} {} (cache)", "—".dimmed(), filename);
+                    return ProcessResult::Organized {
+                        from: file.to_path_buf(),
+                        to: dest_pb,
+                    };
+                }
+            }
+        }
+    }
+
     let info = match enricher.enrich(file) {
         Ok(info) => info,
         Err(e) => {
             eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
+            let _ = cache.record_processed(&source_str, mtime, size, None, "error");
             return ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() };
         }
     };
@@ -130,8 +174,10 @@ fn process_file(
             if do_move { let _ = organizer::remove_source(file); }
 
             if is_unsorted {
+                let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "unsorted");
                 ProcessResult::Unsorted { from: file.to_path_buf(), to: dest }
             } else {
+                let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "organized");
                 ProcessResult::Organized { from: file.to_path_buf(), to: dest }
             }
         }
@@ -141,14 +187,17 @@ fn process_file(
             }
             println!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate);
             if do_move { let _ = organizer::remove_source(file); }
+            let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "conflict");
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }
         Ok(organizer::CopyResult::Skipped { existing_bitrate }) => {
             println!("  {} {} — ignoré (existant : {}kbps)", "—".dimmed(), filename, existing_bitrate);
+            let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "organized");
             ProcessResult::Organized { from: file.to_path_buf(), to: dest }
         }
         Err(e) => {
             eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
+            let _ = cache.record_processed(&source_str, mtime, size, None, "error");
             ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() }
         }
     }

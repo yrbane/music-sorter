@@ -31,11 +31,12 @@ pub struct Enricher {
     coverart: CoverArtClient,
     fpcalc_available: bool,
     acoustid_api_key: Option<String>,
+    cache: Arc<crate::cache::Cache>,
 }
 
 impl Enricher {
     /// Crée un nouvel Enricher à partir de la configuration fournie
-    pub fn new(config: &Config) -> Result<Self> {
+    pub fn new(config: &Config, cache: Arc<crate::cache::Cache>) -> Result<Self> {
         let mb_limiter = Arc::new(RateLimiter::new(Duration::from_millis(1100)));
         let discogs_limiter = Arc::new(RateLimiter::new(Duration::from_millis(1000)));
         let coverart_limiter = Arc::new(RateLimiter::new(Duration::from_millis(1100)));
@@ -64,6 +65,7 @@ impl Enricher {
             coverart,
             fpcalc_available,
             acoustid_api_key: config.acoustid_api_key.clone(),
+            cache,
         })
     }
 
@@ -79,10 +81,11 @@ impl Enricher {
         // Étape 2 : si les tags sont insuffisants, tenter le fingerprinting AcoustID
         if !info.has_minimum_for_search() && self.fpcalc_available {
             if let Some(ref api_key) = self.acoustid_api_key {
-                if let Ok(fp) = fingerprint::generate_fingerprint(path) {
+                if let Ok(fp) = fingerprint::generate_or_cached(&self.cache, path) {
                     if let Ok(Some(recording_id)) = fingerprint::lookup_acoustid(api_key, &fp) {
                         if let Ok(Some((mb_info, rid))) =
-                            self.musicbrainz.lookup_by_recording_id(
+                            self.musicbrainz.lookup_by_recording_id_with_cache(
+                                &self.cache,
                                 &recording_id,
                                 existing_album.as_deref(),
                             )
@@ -100,7 +103,8 @@ impl Enricher {
             let artist = info.artist.as_deref().unwrap();
             let title = info.title.as_deref().unwrap();
 
-            if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text(
+            if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text_with_cache(
+                &self.cache,
                 artist,
                 title,
                 existing_album.as_deref(),
@@ -113,7 +117,7 @@ impl Enricher {
         // Étape 4 : pochette via Cover Art Archive
         if info.cover_art.is_none() {
             if let Some(ref rid) = release_id {
-                if let Ok(Some(cover)) = self.coverart.fetch_cover(rid) {
+                if let Ok(Some(cover)) = self.coverart.fetch_cover_cached(&self.cache, rid) {
                     info.cover_art = Some(cover);
                 }
             }
@@ -129,12 +133,12 @@ impl Enricher {
 
                 if !artist.is_empty() && !album.is_empty() {
                     if let Ok(Some((discogs_info, resource_url))) =
-                        discogs.search_release(artist, album)
+                        discogs.search_release_with_cache(&self.cache, artist, album)
                     {
                         info.merge(&discogs_info);
 
                         if let Some(ref url) = resource_url {
-                            if let Ok(Some(details)) = discogs.get_release_details(url) {
+                            if let Ok(Some(details)) = discogs.get_release_details_with_cache(&self.cache, url) {
                                 // Préférer le nom canonique Discogs pour artiste et album
                                 let details_info = TrackInfo {
                                     artist: details.artist,

@@ -1,9 +1,10 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::Mutex;
 
 pub struct Cache {
-    pub(crate) conn: Connection,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl Cache {
@@ -13,7 +14,8 @@ impl Cache {
         mtime: i64,
         size: i64,
     ) -> Result<Option<(String, Option<String>)>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT status, dest_path FROM processed_files
              WHERE source_path = ?1 AND mtime = ?2 AND size = ?3",
         )?;
@@ -38,7 +40,8 @@ impl Cache {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO processed_files
              (source_path, mtime, size, dest_path, status, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -48,7 +51,8 @@ impl Cache {
     }
 
     pub fn lookup_fingerprint(&self, content_hash: &str) -> Result<Option<(String, i64)>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT chromaprint, duration FROM fingerprint_cache WHERE content_hash = ?1"
         )?;
         let mut rows = stmt.query(rusqlite::params![content_hash])?;
@@ -62,7 +66,8 @@ impl Cache {
     pub fn record_fingerprint(&self, content_hash: &str, fp: &str, duration: i64) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO fingerprint_cache (content_hash, chromaprint, duration, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![content_hash, fp, duration, now],
@@ -74,7 +79,8 @@ impl Cache {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
         let cutoff = now - ttl_secs;
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT response FROM api_cache
              WHERE endpoint = ?1 AND cache_key = ?2 AND fetched_at >= ?3"
         )?;
@@ -89,7 +95,8 @@ impl Cache {
     pub fn record_api(&self, endpoint: &str, key: &str, response: &str) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO api_cache (endpoint, cache_key, response, fetched_at)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![endpoint, key, response, now],
@@ -98,7 +105,8 @@ impl Cache {
     }
 
     pub fn lookup_cover(&self, release_id: &str) -> Result<Option<Vec<u8>>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT image FROM cover_cache WHERE release_id = ?1"
         )?;
         let mut rows = stmt.query(rusqlite::params![release_id])?;
@@ -111,7 +119,8 @@ impl Cache {
 
     pub fn lookup_artist(&self, name: &str) -> Result<Option<String>> {
         let key = name.to_lowercase();
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT canonical FROM artists WHERE canonical_lower = ?1"
         )?;
         let mut rows = stmt.query(rusqlite::params![key])?;
@@ -124,7 +133,8 @@ impl Cache {
 
     pub fn record_artist(&self, canonical: &str, mbid: Option<&str>) -> Result<()> {
         let key = canonical.to_lowercase();
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR IGNORE INTO artists (canonical_lower, canonical, mbid) VALUES (?1, ?2, ?3)",
             rusqlite::params![key, canonical, mbid],
         )?;
@@ -134,7 +144,8 @@ impl Cache {
     pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO cover_cache (release_id, image, fetched_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![release_id, image, now],
         )?;
@@ -149,7 +160,7 @@ impl Cache {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
         Self::init_schema(&conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -230,8 +241,8 @@ mod tests {
     fn test_open_creates_db_and_tables() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        let names: Vec<String> = cache
-            .conn
+        let conn = cache.conn.lock().unwrap();
+        let names: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -278,7 +289,7 @@ mod tests {
     fn test_api_cache_expires() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.conn.execute(
+        cache.conn.lock().unwrap().execute(
             "INSERT INTO api_cache VALUES ('mb', 'k', '{}', 0)", [],
         ).unwrap();
         let r = cache.lookup_api("mb", "k", 86400).unwrap();
