@@ -89,6 +89,18 @@ pub fn build_destination_path(
     target.join(folder_name).join(file_name)
 }
 
+/// Copie via reflink (CoW, instantané sur btrfs/xfs/zfs).
+/// En cas d'échec (filesystem non-supporté, cross-fs, etc.), fallback std::fs::copy.
+fn copy_with_reflink(source: &Path, destination: &Path) -> Result<()> {
+    match reflink_copy::reflink(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(source, destination)?;
+            Ok(())
+        }
+    }
+}
+
 /// Copie un fichier vers sa destination en gérant les conflits par bitrate
 pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResult> {
     // Crée les dossiers parents si nécessaire
@@ -103,7 +115,7 @@ pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
 
         if src_bitrate > dst_bitrate {
             // La source est de meilleure qualité → on remplace
-            std::fs::copy(source, destination)?;
+            copy_with_reflink(source, destination)?;
             return Ok(CopyResult::Replaced { bitrate: src_bitrate });
         } else {
             // La destination est au moins aussi bonne → on garde
@@ -114,7 +126,7 @@ pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
     }
 
     // Pas de conflit → copie simple
-    std::fs::copy(source, destination)?;
+    copy_with_reflink(source, destination)?;
     Ok(CopyResult::Copied)
 }
 
@@ -267,6 +279,16 @@ mod tests {
         assert_eq!(sanitize_filename("AC/DC"), "AC_DC");
         assert_eq!(sanitize_filename("a:b*c?d"), "a_b_c_d");
         assert_eq!(sanitize_filename("normal name"), "normal name");
+    }
+
+    #[test]
+    fn test_copy_with_reflink_creates_destination() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.mp3");
+        std::fs::write(&src, b"data").unwrap();
+        let dst = dir.path().join("b.mp3");
+        copy_with_reflink(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"data");
     }
 
     #[test]
