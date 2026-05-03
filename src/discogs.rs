@@ -10,7 +10,9 @@ use crate::rate_limiter::RateLimiter;
 /// URL de base de l'API Discogs
 const BASE_URL: &str = "https://api.discogs.com";
 
-const DISCOGS_CACHE_TTL_SECS: i64 = 90 * 86400;
+/// TTL par défaut du cache Discogs : 90 jours (utilisé dans les tests)
+#[cfg(test)]
+const DISCOGS_DEFAULT_CACHE_TTL_SECS: i64 = 90 * 86400;
 
 /// Détails complets d'une release Discogs
 pub struct ReleaseDetails {
@@ -55,9 +57,10 @@ impl DiscogsClient {
         cache: &crate::cache::Cache,
         artist: &str,
         album: &str,
+        ttl_secs: i64,
     ) -> Result<Option<(TrackInfo, Option<String>)>> {
         let key = crate::cache_keys::api_key(&format!("{}|{}", artist, album));
-        if let Some(json_str) = cache.lookup_api("discogs_search", &key, DISCOGS_CACHE_TTL_SECS)? {
+        if let Some(json_str) = cache.lookup_api("discogs_search", &key, ttl_secs)? {
             let json: serde_json::Value = serde_json::from_str(&json_str)?;
             return Ok(parse_search_response(&json));
         }
@@ -68,9 +71,10 @@ impl DiscogsClient {
     pub fn get_release_details_cached(
         cache: &crate::cache::Cache,
         resource_url: &str,
+        ttl_secs: i64,
     ) -> Result<Option<ReleaseDetails>> {
         let key = crate::cache_keys::api_key(resource_url);
-        if let Some(json_str) = cache.lookup_api("discogs_release", &key, DISCOGS_CACHE_TTL_SECS)? {
+        if let Some(json_str) = cache.lookup_api("discogs_release", &key, ttl_secs)? {
             let json: serde_json::Value = serde_json::from_str(&json_str)?;
             return Ok(parse_release_details(&json));
         }
@@ -83,8 +87,9 @@ impl DiscogsClient {
         cache: &crate::cache::Cache,
         artist: &str,
         album: &str,
+        ttl_secs: i64,
     ) -> Result<Option<(TrackInfo, Option<String>)>> {
-        if let Some(hit) = Self::search_release_cached(cache, artist, album)? {
+        if let Some(hit) = Self::search_release_cached(cache, artist, album, ttl_secs)? {
             return Ok(Some(hit));
         }
 
@@ -112,8 +117,9 @@ impl DiscogsClient {
         &self,
         cache: &crate::cache::Cache,
         resource_url: &str,
+        ttl_secs: i64,
     ) -> Result<Option<ReleaseDetails>> {
-        if let Some(hit) = Self::get_release_details_cached(cache, resource_url)? {
+        if let Some(hit) = Self::get_release_details_cached(cache, resource_url, ttl_secs)? {
             return Ok(Some(hit));
         }
 
@@ -264,7 +270,7 @@ mod tests {
         let key = crate::cache_keys::api_key(&format!("{}|{}", "Boards of Canada", "Geogaddi"));
         cache.record_api("discogs_search", &key, json).unwrap();
 
-        let result = DiscogsClient::search_release_cached(&cache, "Boards of Canada", "Geogaddi").unwrap();
+        let result = DiscogsClient::search_release_cached(&cache, "Boards of Canada", "Geogaddi", DISCOGS_DEFAULT_CACHE_TTL_SECS).unwrap();
         assert!(result.is_some());
         let (info, _) = result.unwrap();
         assert_eq!(info.artist, Some("Boards of Canada".into()));
@@ -279,7 +285,7 @@ mod tests {
         let key = crate::cache_keys::api_key(url);
         cache.record_api("discogs_release", &key, json).unwrap();
 
-        let result = DiscogsClient::get_release_details_cached(&cache, url).unwrap();
+        let result = DiscogsClient::get_release_details_cached(&cache, url, DISCOGS_DEFAULT_CACHE_TTL_SECS).unwrap();
         assert!(result.is_some());
     }
 

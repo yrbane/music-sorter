@@ -17,9 +17,12 @@ use crate::tags;
 /// Écrase l'artiste avec le nom canonique de la DB.
 /// L'album n'est écrasé que si le fichier n'en a pas (évite de remplacer
 /// l'album original par une compilation).
-fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo) {
-    if db_info.artist.is_some() {
-        info.artist.clone_from(&db_info.artist);
+fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo, cache: &crate::cache::Cache) {
+    if let Some(artist) = db_info.artist.as_ref() {
+        // Canonicalise via le registre : le premier nom rencontré gagne
+        let canonical = crate::artist_registry::canonicalize(cache, artist)
+            .unwrap_or_else(|_| artist.clone());
+        info.artist = Some(canonical);
     }
     // Ne PAS écraser l'album si on en a déjà un dans les tags locaux
     info.merge(db_info);
@@ -32,6 +35,7 @@ pub struct Enricher {
     fpcalc_available: bool,
     acoustid_api_key: Option<String>,
     cache: Arc<crate::cache::Cache>,
+    api_cache_ttl_secs: i64,
 }
 
 impl Enricher {
@@ -66,6 +70,7 @@ impl Enricher {
             fpcalc_available,
             acoustid_api_key: config.acoustid_api_key.clone(),
             cache,
+            api_cache_ttl_secs: config.api_cache_ttl_days.unwrap_or(30) as i64 * 86400,
         })
     }
 
@@ -92,9 +97,10 @@ impl Enricher {
                                 &self.cache,
                                 &recording_id,
                                 existing_album.as_deref(),
+                                self.api_cache_ttl_secs,
                             )
                         {
-                            override_from_db(&mut info, &mb_info);
+                            override_from_db(&mut info, &mb_info, &self.cache);
                             release_id = rid;
                         }
                     }
@@ -112,8 +118,9 @@ impl Enricher {
                 artist,
                 title,
                 existing_album.as_deref(),
+                self.api_cache_ttl_secs,
             ) {
-                override_from_db(&mut info, &mb_info);
+                override_from_db(&mut info, &mb_info, &self.cache);
                 release_id = Some(rid);
             }
         }
@@ -137,12 +144,12 @@ impl Enricher {
 
                 if !artist.is_empty() && !album.is_empty() {
                     if let Ok(Some((discogs_info, resource_url))) =
-                        discogs.search_release_with_cache(&self.cache, artist, album)
+                        discogs.search_release_with_cache(&self.cache, artist, album, self.api_cache_ttl_secs)
                     {
                         info.merge(&discogs_info);
 
                         if let Some(ref url) = resource_url {
-                            if let Ok(Some(details)) = discogs.get_release_details_with_cache(&self.cache, url) {
+                            if let Ok(Some(details)) = discogs.get_release_details_with_cache(&self.cache, url, self.api_cache_ttl_secs) {
                                 // Préférer le nom canonique Discogs pour artiste et album
                                 let details_info = TrackInfo {
                                     artist: details.artist,
@@ -151,7 +158,7 @@ impl Enricher {
                                     genre: details.genre,
                                     ..Default::default()
                                 };
-                                override_from_db(&mut info, &details_info);
+                                override_from_db(&mut info, &details_info, &self.cache);
 
                                 if info.cover_art.is_none() {
                                     if let Some(ref cover_url) = details.cover_url {
@@ -168,5 +175,38 @@ impl Enricher {
         }
 
         Ok(info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_override_canonicalizes_artist() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+
+        // Premier appel : enregistre "Boards Of Canada" comme canonique
+        let mut info1 = TrackInfo::default();
+        let db_info1 = TrackInfo {
+            artist: Some("Boards Of Canada".into()),
+            album: Some("Geogaddi".into()),
+            ..Default::default()
+        };
+        override_from_db(&mut info1, &db_info1, &cache);
+        assert_eq!(info1.artist, Some("Boards Of Canada".into()));
+
+        // Deuxième appel avec une casse différente : doit récupérer la casse précédente
+        let mut info2 = TrackInfo::default();
+        let db_info2 = TrackInfo {
+            artist: Some("boards of canada".into()),
+            album: Some("Music Has the Right to Children".into()),
+            ..Default::default()
+        };
+        override_from_db(&mut info2, &db_info2, &cache);
+        assert_eq!(info2.artist, Some("Boards Of Canada".into()));
     }
 }
