@@ -14,15 +14,14 @@ use crate::rate_limiter::RateLimiter;
 use crate::tags;
 
 /// Orchestre l'enrichissement des métadonnées audio via MusicBrainz, AcoustID, Cover Art Archive et Discogs
-/// Écrase artiste et album avec les noms canoniques de la DB,
-/// puis fusionne le reste (remplit les champs manquants)
+/// Écrase l'artiste avec le nom canonique de la DB.
+/// L'album n'est écrasé que si le fichier n'en a pas (évite de remplacer
+/// l'album original par une compilation).
 fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo) {
     if db_info.artist.is_some() {
         info.artist.clone_from(&db_info.artist);
     }
-    if db_info.album.is_some() {
-        info.album.clone_from(&db_info.album);
-    }
+    // Ne PAS écraser l'album si on en a déjà un dans les tags locaux
     info.merge(db_info);
 }
 
@@ -75,15 +74,19 @@ impl Enricher {
 
         let mut release_id: Option<String> = None;
 
+        let existing_album = info.album.clone();
+
         // Étape 2 : si les tags sont insuffisants, tenter le fingerprinting AcoustID
         if !info.has_minimum_for_search() && self.fpcalc_available {
             if let Some(ref api_key) = self.acoustid_api_key {
                 if let Ok(fp) = fingerprint::generate_fingerprint(path) {
                     if let Ok(Some(recording_id)) = fingerprint::lookup_acoustid(api_key, &fp) {
                         if let Ok(Some((mb_info, rid))) =
-                            self.musicbrainz.lookup_by_recording_id(&recording_id)
+                            self.musicbrainz.lookup_by_recording_id(
+                                &recording_id,
+                                existing_album.as_deref(),
+                            )
                         {
-                            // Préférer le nom canonique de la DB pour artiste et album
                             override_from_db(&mut info, &mb_info);
                             release_id = rid;
                         }
@@ -97,8 +100,11 @@ impl Enricher {
             let artist = info.artist.as_deref().unwrap();
             let title = info.title.as_deref().unwrap();
 
-            if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text(artist, title) {
-                // Préférer le nom canonique de la DB pour artiste et album
+            if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text(
+                artist,
+                title,
+                existing_album.as_deref(),
+            ) {
                 override_from_db(&mut info, &mb_info);
                 release_id = Some(rid);
             }
