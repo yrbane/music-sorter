@@ -1,4 +1,5 @@
 mod cache;
+mod cache_keys;
 mod cli;
 mod config;
 mod coverart;
