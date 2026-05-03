@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::tag::{Accessor, Tag};
+use lofty::tag::{Accessor, Tag, TagType};
 use std::path::Path;
 
 /// Lit les tags audio d'un fichier et retourne un TrackInfo
@@ -128,6 +128,12 @@ pub fn write_tags(path: &Path, info: &TrackInfo) -> Result<()> {
             }
         }
     }
+
+    // Supprime l'éventuel tag ID3v1 : son encodeur (lofty 0.22) panique
+    // sur les chaînes contenant des caractères multi-octets pile à la frontière
+    // de 30 bytes (limite ID3v1). De toute façon ID3v1 est obsolète et incapable
+    // de stocker artiste/album/titre au-delà de 30 bytes.
+    let _ = tagged_file.remove(TagType::Id3v1);
 
     // Sauvegarde le tag dans le fichier
     tagged_file
