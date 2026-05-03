@@ -7,6 +7,46 @@ pub struct Cache {
 }
 
 impl Cache {
+    pub fn lookup_processed(
+        &self,
+        source_path: &str,
+        mtime: i64,
+        size: i64,
+    ) -> Result<Option<(String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status, dest_path FROM processed_files
+             WHERE source_path = ?1 AND mtime = ?2 AND size = ?3",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![source_path, mtime, size])?;
+        if let Some(row) = rows.next()? {
+            let status: String = row.get(0)?;
+            let dest: Option<String> = row.get(1)?;
+            Ok(Some((status, dest)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn record_processed(
+        &self,
+        source_path: &str,
+        mtime: i64,
+        size: i64,
+        dest_path: Option<&str>,
+        status: &str,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO processed_files
+             (source_path, mtime, size, dest_path, status, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![source_path, mtime, size, dest_path, status, now],
+        )?;
+        Ok(())
+    }
+
     pub fn open(target: &Path) -> Result<Self> {
         let db_path = target.join(".music-sorter.db");
         std::fs::create_dir_all(target)?;
@@ -61,6 +101,36 @@ impl Cache {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_processed_lookup_miss() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        let result = cache.lookup_processed("/foo/bar.mp3", 100, 200).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_processed_record_and_lookup_hit() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache
+            .record_processed("/foo/bar.mp3", 100, 200, Some("/dest"), "organized")
+            .unwrap();
+        let r = cache.lookup_processed("/foo/bar.mp3", 100, 200).unwrap();
+        assert_eq!(r, Some(("organized".into(), Some("/dest".into()))));
+    }
+
+    #[test]
+    fn test_processed_miss_when_mtime_changed() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache
+            .record_processed("/foo.mp3", 100, 200, Some("/dest"), "organized")
+            .unwrap();
+        let r = cache.lookup_processed("/foo.mp3", 999, 200).unwrap();
+        assert!(r.is_none());
+    }
 
     #[test]
     fn test_open_creates_db_and_tables() {
