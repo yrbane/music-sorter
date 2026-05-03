@@ -48,44 +48,6 @@ impl DiscogsClient {
         Ok(Self { client, token, rate_limiter })
     }
 
-    /// Recherche une release par artiste et album
-    /// Retourne (infos de base, resource_url) si trouvé
-    pub fn search_release(
-        &self,
-        artist: &str,
-        album: &str,
-    ) -> Result<Option<(TrackInfo, Option<String>)>> {
-        let artist_enc = url_encode(artist);
-        let album_enc = url_encode(album);
-        let url = format!(
-            "{}/database/search?artist={}&release_title={}&type=release&token={}&per_page=5",
-            BASE_URL, artist_enc, album_enc, self.token
-        );
-
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let json: serde_json::Value = response.json()?;
-        Ok(parse_search_response(&json))
-    }
-
-    /// Récupère les détails complets d'une release via sa resource_url Discogs
-    pub fn get_release_details(&self, resource_url: &str) -> Result<Option<ReleaseDetails>> {
-        self.rate_limiter.wait();
-        let response = self.client.get(resource_url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let json: serde_json::Value = response.json()?;
-        Ok(parse_release_details(&json))
-    }
-
     /// Recherche en lisant uniquement le cache JSON
     pub fn search_release_cached(
         cache: &crate::cache::Cache,

@@ -30,67 +30,6 @@ impl MusicBrainzClient {
         Ok(Self { client, rate_limiter })
     }
 
-    /// Recherche une piste par son identifiant MusicBrainz Recording ID
-    /// existing_album : album dans les tags locaux, pour choisir le bon release
-    pub fn lookup_by_recording_id(
-        &self,
-        recording_id: &str,
-        existing_album: Option<&str>,
-    ) -> Result<Option<(TrackInfo, Option<String>)>> {
-        let url = format!(
-            "{}/recording/{}?inc=releases+artists+genres+release-groups&fmt=json",
-            BASE_URL, recording_id
-        );
-
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let json: serde_json::Value = response.json()?;
-        let release_id = extract_release_id(&json);
-
-        match parse_recording_response(&json, existing_album) {
-            Some(info) => Ok(Some((info, release_id))),
-            None => Ok(None),
-        }
-    }
-
-    /// Recherche une piste par texte (artiste + titre)
-    /// existing_album : album dans les tags locaux, pour choisir le bon release
-    pub fn search_by_text(
-        &self,
-        artist: &str,
-        title: &str,
-        existing_album: Option<&str>,
-    ) -> Result<Option<(TrackInfo, String)>> {
-        let query = format!(
-            "artist:\"{}\" AND recording:\"{}\"",
-            artist, title
-        );
-        let encoded = url_encode(&query);
-        let url = format!(
-            "{}/recording/?query={}&fmt=json&limit=5",
-            BASE_URL, encoded
-        );
-
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        let json: serde_json::Value = response.json()?;
-
-        match parse_search_response(&json, existing_album) {
-            Some((info, release_id)) => Ok(Some((info, release_id))),
-            None => Ok(None),
-        }
-    }
-
     /// Recherche textuelle en lisant uniquement le cache (pas d'appel HTTP)
     pub fn search_by_text_cached(
         cache: &crate::cache::Cache,

@@ -124,25 +124,26 @@ fn process_file(
             };
         }
     };
-    let mtime = metadata.modified()
+    let mtime: Option<i64> = metadata.modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map(|d| d.as_secs() as i64);
     let size = metadata.len() as i64;
     let source_str = file.to_string_lossy().into_owned();
 
-    // Skip total si déjà organisé et la destination existe encore
-    if let Ok(Some((status, dest_opt))) = cache.lookup_processed(&source_str, mtime, size) {
-        if status == "organized" {
-            if let Some(d) = dest_opt {
-                let dest_pb = std::path::PathBuf::from(d);
-                if dest_pb.exists() {
-                    println!("  {} {} (cache)", "—".dimmed(), filename);
-                    return ProcessResult::Organized {
-                        from: file.to_path_buf(),
-                        to: dest_pb,
-                    };
+    // Skip total si déjà organisé et la destination existe encore (uniquement si mtime disponible)
+    if let Some(mt) = mtime {
+        if let Ok(Some((status, dest_opt))) = cache.lookup_processed(&source_str, mt, size) {
+            if status == "organized" {
+                if let Some(d) = dest_opt {
+                    let dest_pb = std::path::PathBuf::from(d);
+                    if dest_pb.exists() {
+                        println!("  {} {} (cache)", "—".dimmed(), filename);
+                        return ProcessResult::Organized {
+                            from: file.to_path_buf(),
+                            to: dest_pb,
+                        };
+                    }
                 }
             }
         }
@@ -152,7 +153,9 @@ fn process_file(
         Ok(info) => info,
         Err(e) => {
             eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
-            let _ = cache.record_processed(&source_str, mtime, size, None, "error");
+            if let Some(mt) = mtime {
+                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+            }
             return ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() };
         }
     };
@@ -174,10 +177,14 @@ fn process_file(
             if do_move { let _ = organizer::remove_source(file); }
 
             if is_unsorted {
-                let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "unsorted");
+                if let Some(mt) = mtime {
+                    let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "unsorted");
+                }
                 ProcessResult::Unsorted { from: file.to_path_buf(), to: dest }
             } else {
-                let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "organized");
+                if let Some(mt) = mtime {
+                    let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
+                }
                 ProcessResult::Organized { from: file.to_path_buf(), to: dest }
             }
         }
@@ -187,17 +194,23 @@ fn process_file(
             }
             println!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate);
             if do_move { let _ = organizer::remove_source(file); }
-            let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "conflict");
+            if let Some(mt) = mtime {
+                let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "conflict");
+            }
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }
         Ok(organizer::CopyResult::Skipped { existing_bitrate }) => {
             println!("  {} {} — ignoré (existant : {}kbps)", "—".dimmed(), filename, existing_bitrate);
-            let _ = cache.record_processed(&source_str, mtime, size, Some(&dest.to_string_lossy()), "organized");
+            if let Some(mt) = mtime {
+                let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
+            }
             ProcessResult::Organized { from: file.to_path_buf(), to: dest }
         }
         Err(e) => {
             eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
-            let _ = cache.record_processed(&source_str, mtime, size, None, "error");
+            if let Some(mt) = mtime {
+                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+            }
             ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() }
         }
     }
