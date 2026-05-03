@@ -39,19 +39,31 @@ fn resolve_existing_folder(target: &Path, proposed: &str) -> String {
 }
 
 /// Construit le chemin de destination d'un fichier audio
-pub fn build_destination_path(target: &Path, info: &TrackInfo, original_path: &Path) -> PathBuf {
+/// `source_root` permet de reconstruire la structure relative dans `_unsorted/`
+pub fn build_destination_path(
+    target: &Path,
+    info: &TrackInfo,
+    original_path: &Path,
+    source_root: &Path,
+) -> PathBuf {
     // Récupère l'extension du fichier original
     let ext = original_path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    // Pas assez d'info → dossier _unsorted
+    // Pas assez d'info → dossier _unsorted en conservant la structure relative
     if !info.has_minimum_for_organization() {
-        let filename = original_path
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("unknown"));
-        return target.join("_unsorted").join(filename);
+        let relative = original_path
+            .strip_prefix(source_root)
+            .unwrap_or_else(|_| {
+                Path::new(
+                    original_path
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("unknown")),
+                )
+            });
+        return target.join("_unsorted").join(relative);
     }
 
     // Les champs sont garantis Some ici
@@ -132,8 +144,9 @@ mod tests {
         };
         let original = Path::new("song.flac");
         let target = Path::new("/home/user/Music");
+        let source = Path::new("/home/user/Downloads");
 
-        let result = build_destination_path(target, &info, original);
+        let result = build_destination_path(target, &info, original, source);
 
         assert_eq!(
             result,
@@ -153,8 +166,9 @@ mod tests {
         };
         let original = Path::new("file.mp3");
         let target = Path::new("/music");
+        let source = Path::new("/downloads");
 
-        let result = build_destination_path(target, &info, original);
+        let result = build_destination_path(target, &info, original, source);
 
         assert_eq!(result, Path::new("/music/BoC - Geogaddi/Track.mp3"));
     }
@@ -171,19 +185,48 @@ mod tests {
         };
         let original = Path::new("track.ogg");
         let target = Path::new("/music");
+        let source = Path::new("/downloads");
 
-        let result = build_destination_path(target, &info, original);
+        let result = build_destination_path(target, &info, original, source);
 
         assert_eq!(result, Path::new("/music/Artist - 2020 - Album/Title.ogg"));
     }
 
     #[test]
-    fn test_build_destination_unsorted() {
+    fn test_build_destination_unsorted_preserves_relative_structure() {
         let info = TrackInfo::default();
-        let original = Path::new("unknown.mp3");
+        let original = Path::new("/downloads/best of 2024/disc 1/unknown.mp3");
         let target = Path::new("/music");
+        let source = Path::new("/downloads");
 
-        let result = build_destination_path(target, &info, original);
+        let result = build_destination_path(target, &info, original, source);
+
+        assert_eq!(
+            result,
+            Path::new("/music/_unsorted/best of 2024/disc 1/unknown.mp3")
+        );
+    }
+
+    #[test]
+    fn test_build_destination_unsorted_at_source_root() {
+        let info = TrackInfo::default();
+        let original = Path::new("/downloads/unknown.mp3");
+        let target = Path::new("/music");
+        let source = Path::new("/downloads");
+
+        let result = build_destination_path(target, &info, original, source);
+
+        assert_eq!(result, Path::new("/music/_unsorted/unknown.mp3"));
+    }
+
+    #[test]
+    fn test_build_destination_unsorted_falls_back_when_not_under_source() {
+        let info = TrackInfo::default();
+        let original = Path::new("/elsewhere/unknown.mp3");
+        let target = Path::new("/music");
+        let source = Path::new("/downloads");
+
+        let result = build_destination_path(target, &info, original, source);
 
         assert_eq!(result, Path::new("/music/_unsorted/unknown.mp3"));
     }
@@ -206,7 +249,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result = build_destination_path(target, &info, Path::new("song.flac"));
+        let result = build_destination_path(
+            target,
+            &info,
+            Path::new("song.flac"),
+            Path::new("/downloads"),
+        );
 
         assert_eq!(
             result,

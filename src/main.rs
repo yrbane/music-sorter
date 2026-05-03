@@ -41,9 +41,16 @@ fn main() -> Result<()> {
     let enricher = Enricher::new(&config)?;
 
     let results: Vec<ProcessResult> = if args.workers > 1 {
-        process_parallel(&files, &enricher, &args.target, args.do_move, args.workers)
+        process_parallel(
+            &files,
+            &enricher,
+            &args.source,
+            &args.target,
+            args.do_move,
+            args.workers,
+        )
     } else {
-        process_sequential(&files, &enricher, &args.target, args.do_move)
+        process_sequential(&files, &enricher, &args.source, &args.target, args.do_move)
     };
 
     print_summary(&results);
@@ -53,15 +60,20 @@ fn main() -> Result<()> {
 fn process_sequential(
     files: &[std::path::PathBuf],
     enricher: &Enricher,
+    source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
 ) -> Vec<ProcessResult> {
-    files.iter().map(|file| process_file(file, enricher, target, do_move)).collect()
+    files
+        .iter()
+        .map(|file| process_file(file, enricher, source, target, do_move))
+        .collect()
 }
 
 fn process_parallel(
     files: &[std::path::PathBuf],
     enricher: &Enricher,
+    source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
     workers: usize,
@@ -74,13 +86,17 @@ fn process_parallel(
         .expect("Impossible de créer le pool de threads");
 
     pool.install(|| {
-        files.par_iter().map(|file| process_file(file, enricher, target, do_move)).collect()
+        files
+            .par_iter()
+            .map(|file| process_file(file, enricher, source, target, do_move))
+            .collect()
     })
 }
 
 fn process_file(
     file: &std::path::Path,
     enricher: &Enricher,
+    source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
 ) -> ProcessResult {
@@ -94,7 +110,7 @@ fn process_file(
         }
     };
 
-    let dest = organizer::build_destination_path(target, &info, file);
+    let dest = organizer::build_destination_path(target, &info, file, source);
 
     match organizer::copy_to_destination(file, &dest) {
         Ok(organizer::CopyResult::Copied) => {
