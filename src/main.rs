@@ -155,14 +155,31 @@ fn process_file(
         }
     }
 
-    let info = match enricher.enrich(file) {
-        Ok(info) => info,
-        Err(e) => {
+    // Catch des panics éventuels (bugs UTF-8 dans lofty, etc.) pour que le run continue
+    let enrich_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        enricher.enrich(file)
+    }));
+
+    let info = match enrich_result {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => {
             eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, None, "error");
             }
             return ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() };
+        }
+        Err(panic) => {
+            let reason = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic interne (UTF-8 ?)".into());
+            eprintln!("  {} {} — PANIC : {}", "✗".red().bold(), filename, reason);
+            if let Some(mt) = mtime {
+                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+            }
+            return ProcessResult::Error { path: file.to_path_buf(), reason };
         }
     };
 
