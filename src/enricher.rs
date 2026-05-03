@@ -74,6 +74,10 @@ impl Enricher {
         // Étape 1 : lecture des tags existants
         let mut info = tags::read_tags(path).unwrap_or_default();
 
+        if info.has_full_metadata() {
+            return Ok(info);
+        }
+
         let mut release_id: Option<String> = None;
 
         let existing_album = info.album.clone();

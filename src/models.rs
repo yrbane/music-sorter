@@ -58,6 +58,12 @@ impl TrackInfo {
         self.artist.is_some() && self.title.is_some()
     }
 
+    /// Vérifie si tous les champs essentiels + la pochette sont présents
+    pub fn has_full_metadata(&self) -> bool {
+        self.artist.is_some() && self.album.is_some() && self.title.is_some()
+            && self.year.is_some() && self.track_number.is_some() && self.cover_art.is_some()
+    }
+
     /// Vérifie si on a assez d'info pour organiser le fichier
     pub fn has_minimum_for_organization(&self) -> bool {
         self.artist.is_some() && self.album.is_some() && self.title.is_some()
@@ -130,6 +136,23 @@ mod tests {
             ..Default::default()
         };
         assert!(enough.has_minimum_for_search());
+    }
+
+    #[test]
+    fn test_has_full_metadata_requires_all_fields() {
+        let mut info = TrackInfo {
+            artist: Some("a".into()),
+            album: Some("b".into()),
+            title: Some("c".into()),
+            year: Some(2020),
+            track_number: Some(1),
+            genre: Some("g".into()),
+            cover_art: Some(vec![1]),
+            ..Default::default()
+        };
+        assert!(info.has_full_metadata());
+        info.cover_art = None;
+        assert!(!info.has_full_metadata());
     }
 
     #[test]
