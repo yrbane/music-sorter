@@ -23,7 +23,19 @@ Options :
 Fichier : `~/.config/music-sorter/config.toml`
 
 ```toml
+# Tokens API
 discogs_token = "ton_token_ici"
+acoustid_api_key = "ta_cle_acoustid"
+
+# Paramètres par défaut (chacun overridable via CLI)
+source = "~/Téléchargements"
+target = "~/Music"
+workers = 1
+move = false
+
+# Cache
+cache_enabled = true
+api_cache_ttl_days = 30
 ```
 
 Le token Discogs est obtenu sur https://www.discogs.com/settings/developers.
@@ -94,7 +106,13 @@ src/
 ├── coverart.rs          # Récupération pochettes (Cover Art Archive + Discogs)
 ├── enricher.rs          # Orchestration de l'enrichissement (pipeline)
 ├── organizer.rs         # Copie/déplacement + gestion conflits
-└── models.rs            # Structures de données partagées (TrackInfo, etc.)
+├── retry.rs             # Retry avec backoff exponentiel
+├── rate_limiter.rs      # Limiteur de débit partagé entre workers
+├── models.rs            # Structures de données partagées (TrackInfo, etc.)
+├── cache.rs             # Cache SQLite persistant (re-runs rapides)
+├── cache_keys.rs        # Hashes et clés normalisées pour le cache
+├── artist_registry.rs   # Registre canonique des noms d'artistes
+└── album_group.rs       # Helper de regroupement par dossier source
 ```
 
 ### Structures de données principales
@@ -207,6 +225,66 @@ Traitement terminé :
   ✗  1 erreur
 ```
 
+## Cache et performances
+
+### Emplacement
+
+Une base SQLite est créée à la racine du dossier destination : `<target>/.music-sorter.db`. Elle agit comme cache persistant pour accélérer les ré-exécutions et réduire la charge sur les APIs externes.
+
+Ouverte en mode WAL pour permettre lectures concurrentes par plusieurs workers, avec `synchronous = NORMAL` et `temp_store = MEMORY` pour les performances.
+
+### Tables
+
+| Table | Clé | Contenu | Usage |
+|-------|-----|---------|-------|
+| `processed_files` | `source_path` | mtime, size, dest_path, status, last_seen | Index des fichiers déjà traités. Skip total au prochain run si mtime/size inchangés. |
+| `fingerprint_cache` | SHA-256 du fichier | chromaprint, duration | Évite de relancer fpcalc (coût en secondes par fichier). |
+| `api_cache` | (endpoint, cache_key) | response JSON, fetched_at | Cache des appels MusicBrainz, AcoustID, Discogs. TTL configurable. |
+| `cover_cache` | release_id | image binaire, fetched_at | Cache des pochettes téléchargées. |
+| `artists` | canonical_lower | canonical, mbid | Registre canonique des noms d'artistes (résout les variations de casse). |
+
+### TTL par défaut
+
+- MusicBrainz : 30 jours
+- Discogs : 90 jours (les releases changent rarement)
+- Cover art binaire : pas d'expiration (taille bornée par le nombre de releases uniques)
+- Fingerprints : pas d'expiration (déterministe par fichier)
+
+### Configuration
+
+```toml
+# ~/.config/music-sorter/config.toml
+cache_enabled = true        # défaut true. Si false, le cache est en mémoire (perdu à chaque run).
+api_cache_ttl_days = 30     # exposé mais non actif pour l'instant (TTL hardcodés par client)
+```
+
+### Réinitialiser le cache
+
+```bash
+rm -f ~/Music/.music-sorter.db ~/Music/.music-sorter.db-wal ~/Music/.music-sorter.db-shm
+```
+
+### Optimisations supplémentaires
+
+- **Copie via reflink** (CoW) : sur btrfs/xfs/zfs, la copie est quasi-instantanée et ne consomme pas d'espace disque tant que le fichier n'est pas modifié. Fallback automatique sur `std::fs::copy` pour les autres filesystems.
+- **HTTP** : reqwest configuré avec gzip + HTTP/2 (négocié via TLS ALPN) + connection pool (4 connexions persistantes par hôte).
+- **Court-circuit tags complets** : si un fichier source a déjà tous les champs essentiels + une pochette, aucun appel API n'est effectué.
+
+### Procédure de bench (manuelle)
+
+Pour mesurer le gain du cache sur ton dossier réel :
+
+```bash
+# Premier run (cache froid) — on supprime la DB pour repartir de zéro
+rm -f ~/Music/.music-sorter.db*
+time ./target/release/music-sorter --source ~/Téléchargements --target ~/Music
+
+# Deuxième run (cache chaud)
+time ./target/release/music-sorter --source ~/Téléchargements --target ~/Music
+```
+
+Sur un dossier de 200 fichiers déjà organisés, le second run doit passer de plusieurs minutes (rate-limit MB+Discogs) à moins d'une seconde (juste un `SELECT` par fichier).
+
 ## Crates Rust
 
 | Crate | Usage |
@@ -219,5 +297,8 @@ Traitement terminé :
 | walkdir | Scan récursif |
 | colored | Sortie console colorée |
 | rayon | Parallélisme workers |
+| rusqlite | Cache SQLite (bundled) |
+| sha2, hex | Content-hash des fichiers pour le cache fingerprint |
+| reflink-copy | Copie CoW sur btrfs/xfs/zfs |
 
 Appel de `fpcalc` via `std::process::Command` (pas de binding C).
