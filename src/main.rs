@@ -1,3 +1,4 @@
+mod album_group;
 mod artist_registry;
 mod cache;
 mod cache_keys;
