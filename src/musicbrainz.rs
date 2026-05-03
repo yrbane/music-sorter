@@ -25,6 +25,8 @@ impl MusicBrainzClient {
         let client = Client::builder()
             .user_agent("music-sorter/0.1.0 (https://github.com/music-sorter)")
             .timeout(Duration::from_secs(10))
+            .gzip(true)
+            .pool_max_idle_per_host(4)
             .build()?;
 
         Ok(Self { client, rate_limiter })
