@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 pub struct Cache {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Cache {
@@ -66,6 +66,33 @@ impl Cache {
             "INSERT OR REPLACE INTO fingerprint_cache (content_hash, chromaprint, duration, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![content_hash, fp, duration, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn lookup_api(&self, endpoint: &str, key: &str, ttl_secs: i64) -> Result<Option<String>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let cutoff = now - ttl_secs;
+        let mut stmt = self.conn.prepare(
+            "SELECT response FROM api_cache
+             WHERE endpoint = ?1 AND cache_key = ?2 AND fetched_at >= ?3"
+        )?;
+        let mut rows = stmt.query(rusqlite::params![endpoint, key, cutoff])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn record_api(&self, endpoint: &str, key: &str, response: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO api_cache (endpoint, cache_key, response, fetched_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![endpoint, key, response, now],
         )?;
         Ok(())
     }
@@ -182,5 +209,26 @@ mod tests {
         cache.record_fingerprint("hash1", "FPDATA", 200).unwrap();
         let r = cache.lookup_fingerprint("hash1").unwrap();
         assert_eq!(r, Some(("FPDATA".into(), 200)));
+    }
+
+    #[test]
+    fn test_api_cache_miss_then_hit_with_ttl() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        assert!(cache.lookup_api("musicbrainz", "key1", 86400).unwrap().is_none());
+        cache.record_api("musicbrainz", "key1", "{\"a\":1}").unwrap();
+        let r = cache.lookup_api("musicbrainz", "key1", 86400).unwrap();
+        assert_eq!(r, Some("{\"a\":1}".into()));
+    }
+
+    #[test]
+    fn test_api_cache_expires() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.conn.execute(
+            "INSERT INTO api_cache VALUES ('mb', 'k', '{}', 0)", [],
+        ).unwrap();
+        let r = cache.lookup_api("mb", "k", 86400).unwrap();
+        assert!(r.is_none(), "entrée datée de 1970 doit être expirée");
     }
 }
