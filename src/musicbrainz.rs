@@ -10,6 +10,9 @@ use crate::rate_limiter::RateLimiter;
 /// URL de base de l'API MusicBrainz
 const BASE_URL: &str = "https://musicbrainz.org/ws/2";
 
+/// TTL du cache MusicBrainz : 30 jours
+const MB_CACHE_TTL_SECS: i64 = 30 * 86400;
+
 /// Client HTTP pour interroger l'API MusicBrainz
 pub struct MusicBrainzClient {
     client: Client,
@@ -86,6 +89,109 @@ impl MusicBrainzClient {
             Some((info, release_id)) => Ok(Some((info, release_id))),
             None => Ok(None),
         }
+    }
+
+    /// Recherche textuelle en lisant uniquement le cache (pas d'appel HTTP)
+    pub fn search_by_text_cached(
+        cache: &crate::cache::Cache,
+        artist: &str,
+        title: &str,
+        existing_album: Option<&str>,
+    ) -> Result<Option<(TrackInfo, String)>> {
+        let key = crate::cache_keys::api_key(&format!(
+            "{}|{}|{}",
+            artist,
+            title,
+            existing_album.unwrap_or("")
+        ));
+        if let Some(json_str) = cache.lookup_api("mb_search", &key, MB_CACHE_TTL_SECS)? {
+            let json: serde_json::Value = serde_json::from_str(&json_str)?;
+            return Ok(parse_search_response(&json, existing_album));
+        }
+        Ok(None)
+    }
+
+    /// Lookup recording_id en lisant uniquement le cache (pas d'appel HTTP)
+    pub fn lookup_by_recording_id_cached(
+        cache: &crate::cache::Cache,
+        recording_id: &str,
+        existing_album: Option<&str>,
+    ) -> Result<Option<(TrackInfo, Option<String>)>> {
+        let key = crate::cache_keys::api_key(&format!(
+            "{}|{}",
+            recording_id,
+            existing_album.unwrap_or("")
+        ));
+        if let Some(json_str) = cache.lookup_api("mb_lookup", &key, MB_CACHE_TTL_SECS)? {
+            let json: serde_json::Value = serde_json::from_str(&json_str)?;
+            let release_id = extract_release_id(&json);
+            return Ok(parse_recording_response(&json, existing_album).map(|info| (info, release_id)));
+        }
+        Ok(None)
+    }
+
+    /// Recherche textuelle avec cache : lit d'abord, sinon HTTP + enregistrement
+    pub fn search_by_text_with_cache(
+        &self,
+        cache: &crate::cache::Cache,
+        artist: &str,
+        title: &str,
+        existing_album: Option<&str>,
+    ) -> Result<Option<(TrackInfo, String)>> {
+        if let Some(hit) = Self::search_by_text_cached(cache, artist, title, existing_album)? {
+            return Ok(Some(hit));
+        }
+
+        let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
+        let encoded = url_encode(&query);
+        let url = format!("{}/recording/?query={}&fmt=json&limit=5", BASE_URL, encoded);
+        self.rate_limiter.wait();
+        let response = self.client.get(&url).send()?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let body = response.text()?;
+        let key = crate::cache_keys::api_key(&format!(
+            "{}|{}|{}",
+            artist,
+            title,
+            existing_album.unwrap_or("")
+        ));
+        cache.record_api("mb_search", &key, &body)?;
+        let json: serde_json::Value = serde_json::from_str(&body)?;
+        Ok(parse_search_response(&json, existing_album))
+    }
+
+    /// Lookup par ID avec cache : lit d'abord, sinon HTTP + enregistrement
+    pub fn lookup_by_recording_id_with_cache(
+        &self,
+        cache: &crate::cache::Cache,
+        recording_id: &str,
+        existing_album: Option<&str>,
+    ) -> Result<Option<(TrackInfo, Option<String>)>> {
+        if let Some(hit) = Self::lookup_by_recording_id_cached(cache, recording_id, existing_album)? {
+            return Ok(Some(hit));
+        }
+
+        let url = format!(
+            "{}/recording/{}?inc=releases+artists+genres+release-groups&fmt=json",
+            BASE_URL, recording_id
+        );
+        self.rate_limiter.wait();
+        let response = self.client.get(&url).send()?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let body = response.text()?;
+        let key = crate::cache_keys::api_key(&format!(
+            "{}|{}",
+            recording_id,
+            existing_album.unwrap_or("")
+        ));
+        cache.record_api("mb_lookup", &key, &body)?;
+        let json: serde_json::Value = serde_json::from_str(&body)?;
+        let release_id = extract_release_id(&json);
+        Ok(parse_recording_response(&json, existing_album).map(|info| (info, release_id)))
     }
 }
 
@@ -385,5 +491,47 @@ mod tests {
     fn test_extract_release_id() {
         let json = serde_json::json!({"releases": [{"id": "abc-123", "release-group": {"primary-type": "Album"}, "status": "Official"}]});
         assert_eq!(extract_release_id(&json), Some("abc-123".into()));
+    }
+
+    #[test]
+    fn test_mb_search_uses_cache_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::Cache::open(dir.path()).unwrap();
+        let json = r#"{"recordings":[{"score":95,"title":"X","artist-credit":[{"name":"Y"}],
+            "releases":[{"id":"r1","title":"Z","release-group":{"primary-type":"Album"},
+            "status":"Official","media":[{"track-count":10}]}]}]}"#;
+
+        let key = crate::cache_keys::api_key(&format!("{}|{}|{}", "Y", "X", ""));
+        cache.record_api("mb_search", &key, json).unwrap();
+
+        let result = MusicBrainzClient::search_by_text_cached(&cache, "Y", "X", None).unwrap();
+        assert!(result.is_some());
+        let (info, release_id) = result.unwrap();
+        assert_eq!(info.title, Some("X".into()));
+        assert_eq!(release_id, "r1");
+    }
+
+    #[test]
+    fn test_mb_search_cache_miss_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::Cache::open(dir.path()).unwrap();
+        let result = MusicBrainzClient::search_by_text_cached(&cache, "Unknown", "Track", None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_mb_lookup_uses_cache_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::Cache::open(dir.path()).unwrap();
+        let json = r#"{"title":"X","artist-credit":[{"name":"Y"}],
+            "releases":[{"id":"rel-1","title":"Z","release-group":{"primary-type":"Album"},
+            "status":"Official","media":[{"track-count":10}]}],
+            "genres":[]}"#;
+
+        let key = crate::cache_keys::api_key(&format!("{}|{}", "rec-id-123", ""));
+        cache.record_api("mb_lookup", &key, json).unwrap();
+
+        let result = MusicBrainzClient::lookup_by_recording_id_cached(&cache, "rec-id-123", None).unwrap();
+        assert!(result.is_some());
     }
 }
