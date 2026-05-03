@@ -47,6 +47,29 @@ impl Cache {
         Ok(())
     }
 
+    pub fn lookup_fingerprint(&self, content_hash: &str) -> Result<Option<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chromaprint, duration FROM fingerprint_cache WHERE content_hash = ?1"
+        )?;
+        let mut rows = stmt.query(rusqlite::params![content_hash])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn record_fingerprint(&self, content_hash: &str, fp: &str, duration: i64) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fingerprint_cache (content_hash, chromaprint, duration, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![content_hash, fp, duration, now],
+        )?;
+        Ok(())
+    }
+
     pub fn open(target: &Path) -> Result<Self> {
         let db_path = target.join(".music-sorter.db");
         std::fs::create_dir_all(target)?;
@@ -149,5 +172,15 @@ mod tests {
         assert!(names.contains(&"api_cache".into()));
         assert!(names.contains(&"cover_cache".into()));
         assert!(names.contains(&"artists".into()));
+    }
+
+    #[test]
+    fn test_fingerprint_lookup_miss_then_hit() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        assert!(cache.lookup_fingerprint("hash1").unwrap().is_none());
+        cache.record_fingerprint("hash1", "FPDATA", 200).unwrap();
+        let r = cache.lookup_fingerprint("hash1").unwrap();
+        assert_eq!(r, Some(("FPDATA".into(), 200)));
     }
 }

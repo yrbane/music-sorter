@@ -43,6 +43,21 @@ pub fn generate_fingerprint(path: &Path) -> Result<FingerprintResult> {
     Ok(FingerprintResult { duration, fingerprint })
 }
 
+/// Génère un fingerprint avec cache : consulte d'abord le cache,
+/// puis lance fpcalc et enregistre le résultat si miss.
+pub fn generate_or_cached(
+    cache: &crate::cache::Cache,
+    path: &Path,
+) -> Result<FingerprintResult> {
+    let hash = crate::cache_keys::content_hash(path)?;
+    if let Some((fingerprint, duration)) = cache.lookup_fingerprint(&hash)? {
+        return Ok(FingerprintResult { fingerprint, duration: duration as u32 });
+    }
+    let fp = generate_fingerprint(path)?;
+    cache.record_fingerprint(&hash, &fp.fingerprint, fp.duration as i64)?;
+    Ok(fp)
+}
+
 pub fn lookup_acoustid(
     api_key: &str,
     fingerprint: &FingerprintResult,
