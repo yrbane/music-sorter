@@ -109,6 +109,28 @@ impl Cache {
         }
     }
 
+    pub fn lookup_artist(&self, name: &str) -> Result<Option<String>> {
+        let key = name.to_lowercase();
+        let mut stmt = self.conn.prepare(
+            "SELECT canonical FROM artists WHERE canonical_lower = ?1"
+        )?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn record_artist(&self, canonical: &str, mbid: Option<&str>) -> Result<()> {
+        let key = canonical.to_lowercase();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO artists (canonical_lower, canonical, mbid) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, canonical, mbid],
+        )?;
+        Ok(())
+    }
+
     pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
@@ -261,5 +283,16 @@ mod tests {
         ).unwrap();
         let r = cache.lookup_api("mb", "k", 86400).unwrap();
         assert!(r.is_none(), "entrée datée de 1970 doit être expirée");
+    }
+
+    #[test]
+    fn test_artist_register_and_lookup_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.record_artist("Boards of Canada", None).unwrap();
+        let r = cache.lookup_artist("BOARDS OF CANADA").unwrap();
+        assert_eq!(r, Some("Boards of Canada".into()));
+        let r2 = cache.lookup_artist("boards of canada").unwrap();
+        assert_eq!(r2, Some("Boards of Canada".into()));
     }
 }
