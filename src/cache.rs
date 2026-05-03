@@ -97,6 +97,28 @@ impl Cache {
         Ok(())
     }
 
+    pub fn lookup_cover(&self, release_id: &str) -> Result<Option<Vec<u8>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT image FROM cover_cache WHERE release_id = ?1"
+        )?;
+        let mut rows = stmt.query(rusqlite::params![release_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO cover_cache (release_id, image, fetched_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![release_id, image, now],
+        )?;
+        Ok(())
+    }
+
     pub fn open(target: &Path) -> Result<Self> {
         let db_path = target.join(".music-sorter.db");
         std::fs::create_dir_all(target)?;
@@ -219,6 +241,15 @@ mod tests {
         cache.record_api("musicbrainz", "key1", "{\"a\":1}").unwrap();
         let r = cache.lookup_api("musicbrainz", "key1", 86400).unwrap();
         assert_eq!(r, Some("{\"a\":1}".into()));
+    }
+
+    #[test]
+    fn test_cover_cache_roundtrip() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        assert!(cache.lookup_cover("rid").unwrap().is_none());
+        cache.record_cover("rid", &[1, 2, 3, 4]).unwrap();
+        assert_eq!(cache.lookup_cover("rid").unwrap(), Some(vec![1,2,3,4]));
     }
 
     #[test]

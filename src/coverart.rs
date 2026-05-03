@@ -57,6 +57,24 @@ impl CoverArtClient {
         let bytes = img_response.bytes()?;
         Ok(Some(bytes.to_vec()))
     }
+
+    /// Récupère la pochette via le cache binaire ; sinon HTTP + record
+    pub fn fetch_cover_cached(
+        &self,
+        cache: &crate::cache::Cache,
+        release_id: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        if let Some(b) = cache.lookup_cover(release_id)? {
+            return Ok(Some(b));
+        }
+        match self.fetch_cover(release_id)? {
+            Some(bytes) => {
+                cache.record_cover(release_id, &bytes)?;
+                Ok(Some(bytes))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 /// Extrait l'URL de la pochette avant depuis la réponse JSON Cover Art Archive
