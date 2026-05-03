@@ -79,6 +79,18 @@ impl Enricher {
         // Étape 1 : lecture des tags existants
         let mut info = tags::read_tags(path).unwrap_or_default();
 
+        // Étape 1bis : fallback nom de fichier si artist/title manquent
+        // (utile pour les fichiers téléchargés sans tags ID3)
+        if info.artist.is_none() || info.title.is_none() {
+            let (fa, ft) = tags::parse_artist_title_from_filename(path);
+            if info.artist.is_none() {
+                info.artist = fa;
+            }
+            if info.title.is_none() {
+                info.title = ft;
+            }
+        }
+
         if info.has_full_metadata() {
             return Ok(info);
         }

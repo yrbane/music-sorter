@@ -137,6 +137,49 @@ pub fn write_tags(path: &Path, info: &TrackInfo) -> Result<()> {
     Ok(())
 }
 
+/// Heuristique : extrait artiste et titre du nom de fichier quand les tags manquent.
+/// Strip un préfixe optionnel de numéro de piste ("01 - ", "00- ", "1.", etc.)
+/// puis split sur le premier " - " pour séparer artiste et titre.
+/// Si pas de séparateur, retourne (None, Some(stem)) — on a au moins un titre.
+pub fn parse_artist_title_from_filename(path: &Path) -> (Option<String>, Option<String>) {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let cleaned = strip_track_prefix(stem).trim();
+    if cleaned.is_empty() {
+        return (None, None);
+    }
+
+    if let Some(idx) = cleaned.find(" - ") {
+        let a = cleaned[..idx].trim().to_string();
+        let t = cleaned[idx + 3..].trim().to_string();
+        if !a.is_empty() && !t.is_empty() {
+            return (Some(a), Some(t));
+        }
+    }
+
+    (None, Some(cleaned.to_string()))
+}
+
+/// Strip un préfixe de numéro de piste comme "01 - ", "00- ", "1.", "12 ", etc.
+/// Retourne la chaîne d'origine si aucun préfixe reconnaissable.
+fn strip_track_prefix(s: &str) -> &str {
+    let trimmed = s.trim_start();
+    let bytes = trimmed.as_bytes();
+    let mut digits_end = 0;
+    while digits_end < 3 && digits_end < bytes.len() && bytes[digits_end].is_ascii_digit() {
+        digits_end += 1;
+    }
+    if digits_end == 0 {
+        return s;
+    }
+    let rest = &trimmed[digits_end..];
+    let after = rest.trim_start_matches(|c: char| c == '.' || c == '-' || c == ' ' || c == '_');
+    if after.len() < rest.len() && !after.is_empty() {
+        after
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +194,65 @@ mod tests {
     fn test_get_bitrate_nonexistent_file() {
         let result = get_bitrate(Path::new("/tmp/nonexistent_file_xyz.mp3"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_filename_artist_title_split() {
+        let (a, t) = parse_artist_title_from_filename(Path::new("Slope - Komputa Groove.mp3"));
+        assert_eq!(a, Some("Slope".into()));
+        assert_eq!(t, Some("Komputa Groove".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_with_track_number_prefix() {
+        let (a, t) = parse_artist_title_from_filename(Path::new("00- La femme - Sphynx.mp3"));
+        assert_eq!(a, Some("La femme".into()));
+        assert_eq!(t, Some("Sphynx".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_track_only_after_strip() {
+        // "01 - Sphynx" → après strip, juste "Sphynx" sans séparateur → titre seul
+        let (a, t) = parse_artist_title_from_filename(Path::new("01 - Sphynx.mp3"));
+        assert_eq!(a, None);
+        assert_eq!(t, Some("Sphynx".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_keeps_parentheses_in_title() {
+        let (a, t) = parse_artist_title_from_filename(Path::new(
+            "Jimi Hendrix - Hey Joe (Der Joe Remix).mp3",
+        ));
+        assert_eq!(a, Some("Jimi Hendrix".into()));
+        assert_eq!(t, Some("Hey Joe (Der Joe Remix)".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_splits_on_first_separator() {
+        // Le titre peut contenir " - " ; on split UNIQUEMENT sur la première occurrence.
+        let (a, t) = parse_artist_title_from_filename(Path::new(
+            "Stabfinger & K.D.S - Double Trouble - (Original Mix).mp3",
+        ));
+        assert_eq!(a, Some("Stabfinger & K.D.S".into()));
+        assert_eq!(t, Some("Double Trouble - (Original Mix)".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_no_separator_returns_title_only() {
+        let (a, t) = parse_artist_title_from_filename(Path::new(
+            "Agent51 the return of the secret disco agent.mp3",
+        ));
+        assert_eq!(a, None);
+        assert_eq!(
+            t,
+            Some("Agent51 the return of the secret disco agent".into())
+        );
+    }
+
+    #[test]
+    fn test_parse_filename_strips_three_digit_prefix() {
+        let (a, t) = parse_artist_title_from_filename(Path::new("100 - Track Title.mp3"));
+        assert_eq!(a, None);
+        assert_eq!(t, Some("Track Title".into()));
     }
 }
