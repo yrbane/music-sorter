@@ -123,12 +123,15 @@ impl Enricher {
         // Étape 3 : recherche MusicBrainz par texte si artiste+titre disponibles et pas encore de release_id
         if info.has_minimum_for_search() && release_id.is_none() {
             let artist = info.artist.as_deref().unwrap();
-            let title = info.title.as_deref().unwrap();
+            let raw_title = info.title.as_deref().unwrap();
+            // Nettoie le titre des suffixes parasites (Original Mix, OUT NOW, _soundcloud, ...)
+            // pour augmenter le taux de match MusicBrainz, sans toucher au titre réel.
+            let title_cleaned = crate::title_cleaner::clean_for_search(raw_title);
 
             if let Ok(Some((mb_info, rid))) = self.musicbrainz.search_by_text_with_cache(
                 &self.cache,
                 artist,
-                title,
+                &title_cleaned,
                 existing_album.as_deref(),
                 self.api_cache_ttl_secs,
             ) {

@@ -15,6 +15,7 @@ mod rate_limiter;
 mod retry;
 mod scanner;
 mod tags;
+mod title_cleaner;
 
 use crate::enricher::Enricher;
 use crate::models::ProcessResult;
