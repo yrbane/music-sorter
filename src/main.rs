@@ -92,6 +92,14 @@ fn main() -> Result<()> {
     };
 
     print_summary(&results);
+
+    // Cleanup post-run : en mode --move, supprime les dossiers source devenus vides
+    if args.do_move {
+        let removed = organizer::cleanup_empty_dirs(&args.source);
+        if removed > 0 {
+            println!("  {} {} dossiers source vides nettoyés", "·".dimmed(), removed);
+        }
+    }
     Ok(())
 }
 
@@ -208,7 +216,15 @@ fn process_file(
 
     let dest = organizer::build_destination_path(target, &info, file, source);
 
-    match organizer::copy_to_destination(file, &dest) {
+    // En mode --move : rename(2) atomique sur même FS, sinon copy + delete (cross-FS).
+    // La source est consommée par move_to_destination dans tous les cas de succès.
+    let copy_result = if do_move {
+        organizer::move_to_destination(file, &dest)
+    } else {
+        organizer::copy_to_destination(file, &dest)
+    };
+
+    match copy_result {
         Ok(organizer::CopyResult::Copied) => {
             if let Err(e) = tags::write_tags(&dest, &info) {
                 eprintln!("  {} {} — Copié mais erreur tags : {}", "⚠".yellow().bold(), filename, e);
@@ -220,7 +236,6 @@ fn process_file(
             } else {
                 println!("  {} {} → {}", "✓".green().bold(), filename, dest.display());
             }
-            if do_move { let _ = organizer::remove_source(file); }
 
             if is_unsorted {
                 if let Some(mt) = mtime {
@@ -239,7 +254,6 @@ fn process_file(
                 eprintln!("  ⚠ Erreur écriture tags après remplacement : {}", e);
             }
             println!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate);
-            if do_move { let _ = organizer::remove_source(file); }
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "conflict");
             }

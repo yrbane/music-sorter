@@ -131,9 +131,71 @@ pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
 }
 
 /// Supprime le fichier source
+#[allow(dead_code)]
 pub fn remove_source(source: &Path) -> Result<()> {
     std::fs::remove_file(source)?;
     Ok(())
+}
+
+/// Déplace un fichier vers sa destination en consommant la source.
+/// Privilégie `rename(2)` (atomique, zéro espace, instantané sur même FS),
+/// sinon fallback copy + delete pour les déplacements cross-filesystem.
+fn move_or_copy_delete(source: &Path, destination: &Path) -> Result<()> {
+    if std::fs::rename(source, destination).is_ok() {
+        return Ok(());
+    }
+    copy_with_reflink(source, destination)?;
+    std::fs::remove_file(source)?;
+    Ok(())
+}
+
+/// Déplace un fichier vers sa destination en gérant les conflits par bitrate.
+/// La source est TOUJOURS consommée en cas de succès (sémantique --move).
+pub fn move_to_destination(source: &Path, destination: &Path) -> Result<CopyResult> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    if destination.exists() {
+        let src_bitrate = crate::tags::get_bitrate(source).unwrap_or(0);
+        let dst_bitrate = crate::tags::get_bitrate(destination).unwrap_or(0);
+
+        if src_bitrate > dst_bitrate {
+            // Source meilleure → on remplace dest et on consomme source
+            std::fs::remove_file(destination)?;
+            move_or_copy_delete(source, destination)?;
+            return Ok(CopyResult::Replaced { bitrate: src_bitrate });
+        } else {
+            // Dest au moins aussi bonne → on supprime juste source (consolidation)
+            std::fs::remove_file(source)?;
+            return Ok(CopyResult::Skipped {
+                existing_bitrate: dst_bitrate,
+            });
+        }
+    }
+
+    move_or_copy_delete(source, destination)?;
+    Ok(CopyResult::Copied)
+}
+
+/// Supprime récursivement les sous-dossiers vides sous `root` (root inclus exclu).
+/// Utilise `remove_dir` (non-récursif) qui n'efface que les dossiers réellement vides.
+pub fn cleanup_empty_dirs(root: &Path) -> usize {
+    use walkdir::WalkDir;
+    let mut removed = 0;
+    for entry in WalkDir::new(root)
+        .contents_first(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_dir()
+            && entry.path() != root
+            && std::fs::remove_dir(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -312,5 +374,58 @@ mod tests {
 
         // Vérifie que le résultat est Copied
         assert!(matches!(result, CopyResult::Copied));
+    }
+
+    #[test]
+    fn test_move_to_destination_consumes_source() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("a.txt");
+        std::fs::write(&source, b"data").unwrap();
+        let dest = dir.path().join("sub/b.txt");
+
+        let result = move_to_destination(&source, &dest).unwrap();
+
+        assert!(matches!(result, CopyResult::Copied));
+        assert!(dest.exists(), "dest doit exister");
+        assert!(!source.exists(), "source doit avoir été consommée");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+    }
+
+    #[test]
+    fn test_move_to_destination_skipped_still_consumes_source() {
+        // Même si la dest existe avec un meilleur ou égal bitrate, le mode --move
+        // doit consommer la source (sémantique de consolidation).
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("a.txt");
+        let dest = dir.path().join("b.txt");
+        std::fs::write(&source, b"src").unwrap();
+        std::fs::write(&dest, b"dst").unwrap();
+
+        let result = move_to_destination(&source, &dest).unwrap();
+
+        assert!(matches!(result, CopyResult::Skipped { .. }));
+        assert!(!source.exists(), "source doit être supprimée même si Skipped");
+        assert!(dest.exists(), "dest intacte");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"dst");
+    }
+
+    #[test]
+    fn test_cleanup_empty_dirs_removes_only_empty() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Arborescence : root/empty1/empty1a/, root/keep/file.txt, root/empty2/
+        std::fs::create_dir_all(root.join("empty1/empty1a")).unwrap();
+        std::fs::create_dir_all(root.join("keep")).unwrap();
+        std::fs::write(root.join("keep/file.txt"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("empty2")).unwrap();
+
+        let removed = cleanup_empty_dirs(root);
+
+        // 3 dossiers vides supprimés (empty1, empty1a, empty2)
+        assert_eq!(removed, 3);
+        assert!(!root.join("empty1").exists());
+        assert!(!root.join("empty2").exists());
+        assert!(root.join("keep").exists(), "dossier non-vide préservé");
+        assert!(root.exists(), "root jamais supprimé");
     }
 }
