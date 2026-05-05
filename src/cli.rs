@@ -2,8 +2,39 @@ use crate::config::Config;
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Bannière ASCII art colorée affichée avant le help.
+/// Codes ANSI : 36=cyan, 1;35=bold magenta, 2=dim, 0=reset.
+const BANNER: &str = "\
+\x1b[36m  ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫\x1b[0m
+\x1b[1;35m   __  __           _        ____             _
+  |  \\/  |_   _ ___(_) ___  / ___|  ___  _ __| |_ ___ _ __
+  | |\\/| | | | / __| |/ __| \\___ \\ / _ \\| '__| __/ _ \\ '__|
+  | |  | | |_| \\__ \\ | (__   ___) | (_) | |  | ||  __/ |
+  |_|  |_|\\__,_|___/_|\\___| |____/ \\___/|_|   \\__\\___|_|\x1b[0m
+\x1b[36m  ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪ ♫ ♪\x1b[0m
+\x1b[2m  Organise ta musique automatiquement avec MusicBrainz, AcoustID et Discogs\x1b[0m
+";
+
+/// Exemples affichés après le help.
+const EXAMPLES: &str = "\
+\x1b[1;33mExemples :\x1b[0m
+  \x1b[36mmusic-sorter --source ~/Téléchargements --target ~/Music\x1b[0m
+  \x1b[36mmusic-sorter --workers 4 --move\x1b[0m
+  \x1b[36mmusic-sorter --target ~/Music --list-processed\x1b[0m         \x1b[2m# audit du cache\x1b[0m
+  \x1b[36mmusic-sorter --target ~/Music --rollback\x1b[0m                \x1b[2m# dry-run\x1b[0m
+  \x1b[36mmusic-sorter --target ~/Music --rollback --apply\x1b[0m         \x1b[2m# exécute\x1b[0m
+
+\x1b[2mLes valeurs par défaut peuvent être stockées dans ~/.config/music-sorter/config.toml\x1b[0m
+";
+
 #[derive(Parser, Debug, Clone)]
-#[command(name = "music-sorter", version, about = "Organise ta musique automatiquement")]
+#[command(
+    name = "music-sorter",
+    version,
+    about = "Organise ta musique automatiquement",
+    before_help = BANNER,
+    after_help = EXAMPLES,
+)]
 pub struct Args {
     /// Dossier source à scanner
     #[arg(long)]
