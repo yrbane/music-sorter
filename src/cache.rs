@@ -7,7 +7,50 @@ pub struct Cache {
     pub(crate) conn: Mutex<Connection>,
 }
 
+/// Une entrée de processed_files exposée pour le mode rollback.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessedEntry {
+    pub source_path: String,
+    pub dest_path: String,
+    pub status: String,
+    pub last_seen: i64,
+}
+
 impl Cache {
+    /// Liste toutes les entrées avec un dest_path défini, triées par date décroissante.
+    pub fn list_all_processed(&self) -> Result<Vec<ProcessedEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT source_path, dest_path, status, last_seen
+             FROM processed_files
+             WHERE dest_path IS NOT NULL
+             ORDER BY last_seen DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProcessedEntry {
+                source_path: row.get(0)?,
+                dest_path: row.get(1)?,
+                status: row.get(2)?,
+                last_seen: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Supprime une entrée de processed_files (utilisé après rollback réussi).
+    pub fn delete_processed(&self, source_path: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM processed_files WHERE source_path = ?1",
+            rusqlite::params![source_path],
+        )?;
+        Ok(())
+    }
+
     pub fn lookup_processed(
         &self,
         source_path: &str,
@@ -323,5 +366,31 @@ mod tests {
         assert_eq!(r, Some("Boards of Canada".into()));
         let r2 = cache.lookup_artist("boards of canada").unwrap();
         assert_eq!(r2, Some("Boards of Canada".into()));
+    }
+
+    #[test]
+    fn test_list_all_processed_returns_entries_with_dest() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized").unwrap();
+        cache.record_processed("/b.mp3", 2, 200, Some("/dst/b.mp3"), "conflict").unwrap();
+        cache.record_processed("/c.mp3", 3, 300, None, "error").unwrap();
+
+        let entries = cache.list_all_processed().unwrap();
+        assert_eq!(entries.len(), 2);
+        let sources: Vec<&str> = entries.iter().map(|e| e.source_path.as_str()).collect();
+        assert!(sources.contains(&"/a.mp3"));
+        assert!(sources.contains(&"/b.mp3"));
+        assert!(!sources.contains(&"/c.mp3"));
+    }
+
+    #[test]
+    fn test_delete_processed_removes_entry() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized").unwrap();
+        assert_eq!(cache.list_all_processed().unwrap().len(), 1);
+        cache.delete_processed("/a.mp3").unwrap();
+        assert_eq!(cache.list_all_processed().unwrap().len(), 0);
     }
 }

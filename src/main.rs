@@ -13,6 +13,7 @@ mod musicbrainz;
 mod organizer;
 mod rate_limiter;
 mod retry;
+mod rollback;
 mod scanner;
 mod tags;
 mod title_cleaner;
@@ -27,6 +28,27 @@ use std::sync::Arc;
 fn main() -> Result<()> {
     let config = config::Config::load()?;
     let args = cli::Args::parse().resolve(&config);
+
+    // Modes spéciaux qui n'ont pas besoin du dossier source
+    if args.list_processed || args.rollback {
+        // Le cache doit exister à l'emplacement de la target
+        if !args.target.join(".music-sorter.db").exists() {
+            eprintln!(
+                "{} Pas de cache trouvé à {} (rien à lister/défaire)",
+                "✗".red().bold(),
+                args.target.display()
+            );
+            std::process::exit(1);
+        }
+        let cache = cache::Cache::open(&args.target)?;
+        if args.list_processed {
+            return rollback::print_list(&cache);
+        }
+        if args.rollback {
+            rollback::run(&cache, args.apply)?;
+            return Ok(());
+        }
+    }
 
     println!("{} {}", "Source:".bold(), args.source.display());
     println!("{} {}", "Destination:".bold(), args.target.display());

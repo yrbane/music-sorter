@@ -20,6 +20,18 @@ pub struct Args {
     /// Déplacer les fichiers au lieu de les copier
     #[arg(long, default_value_t = false)]
     pub r#move: bool,
+
+    /// Liste les entrées du cache processed_files (source → dest) puis quitte
+    #[arg(long, default_value_t = false)]
+    pub list_processed: bool,
+
+    /// Défait les opérations passées en se basant sur le cache (dry-run par défaut)
+    #[arg(long, default_value_t = false)]
+    pub rollback: bool,
+
+    /// Avec --rollback : exécute réellement (sans ce flag, simple aperçu)
+    #[arg(long, default_value_t = false)]
+    pub apply: bool,
 }
 
 /// Arguments résolus (config + CLI + défauts)
@@ -28,6 +40,9 @@ pub struct ResolvedArgs {
     pub target: PathBuf,
     pub workers: usize,
     pub do_move: bool,
+    pub list_processed: bool,
+    pub rollback: bool,
+    pub apply: bool,
 }
 
 impl Args {
@@ -59,6 +74,9 @@ impl Args {
             target: expand_tilde(&target_str),
             workers,
             do_move,
+            list_processed: self.list_processed,
+            rollback: self.rollback,
+            apply: self.apply,
         }
     }
 }
@@ -122,6 +140,9 @@ mod tests {
             target: Some("/tmp/dst".into()),
             workers: Some(4),
             r#move: true,
+            list_processed: false,
+            rollback: false,
+            apply: false,
         };
         let config = Config {
             source: Some("~/Downloads".into()),
@@ -145,6 +166,9 @@ mod tests {
             target: None,
             workers: None,
             r#move: false,
+            list_processed: false,
+            rollback: false,
+            apply: false,
         };
         let config = Config {
             source: Some("/data/music-in".into()),
@@ -168,6 +192,9 @@ mod tests {
             target: None,
             workers: None,
             r#move: false,
+            list_processed: false,
+            rollback: false,
+            apply: false,
         };
         let config = Config::default();
 
