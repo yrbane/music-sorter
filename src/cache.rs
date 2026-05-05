@@ -51,22 +51,24 @@ impl Cache {
         Ok(())
     }
 
+    /// Retourne `(status, dest_path, last_seen)` si l'entrée existe et matche mtime+size.
     pub fn lookup_processed(
         &self,
         source_path: &str,
         mtime: i64,
         size: i64,
-    ) -> Result<Option<(String, Option<String>)>> {
+    ) -> Result<Option<(String, Option<String>, i64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT status, dest_path FROM processed_files
+            "SELECT status, dest_path, last_seen FROM processed_files
              WHERE source_path = ?1 AND mtime = ?2 AND size = ?3",
         )?;
         let mut rows = stmt.query(rusqlite::params![source_path, mtime, size])?;
         if let Some(row) = rows.next()? {
             let status: String = row.get(0)?;
             let dest: Option<String> = row.get(1)?;
-            Ok(Some((status, dest)))
+            let last_seen: i64 = row.get(2)?;
+            Ok(Some((status, dest, last_seen)))
         } else {
             Ok(None)
         }
@@ -276,7 +278,12 @@ mod tests {
             .record_processed("/foo/bar.mp3", 100, 200, Some("/dest"), "organized")
             .unwrap();
         let r = cache.lookup_processed("/foo/bar.mp3", 100, 200).unwrap();
-        assert_eq!(r, Some(("organized".into(), Some("/dest".into()))));
+        assert!(r.is_some());
+        let (status, dest, last_seen) = r.unwrap();
+        assert_eq!(status, "organized");
+        assert_eq!(dest, Some("/dest".into()));
+        // last_seen est un timestamp Unix récent (> 0)
+        assert!(last_seen > 0);
     }
 
     #[test]
@@ -354,7 +361,10 @@ mod tests {
         let cache = Cache::open_in_memory().unwrap();
         cache.record_processed("/foo", 1, 2, Some("/dest"), "organized").unwrap();
         let r = cache.lookup_processed("/foo", 1, 2).unwrap();
-        assert_eq!(r, Some(("organized".into(), Some("/dest".into()))));
+        assert!(r.is_some());
+        let (status, dest, _last_seen) = r.unwrap();
+        assert_eq!(status, "organized");
+        assert_eq!(dest, Some("/dest".into()));
     }
 
     #[test]

@@ -197,10 +197,24 @@ fn process_file(
     let size = metadata.len() as i64;
     let source_str = file.to_string_lossy().into_owned();
 
-    // Skip total si déjà organisé et la destination existe encore (uniquement si mtime disponible)
+    // Skip total via cache : organized/conflict toujours skip ; unsorted skip seulement
+    // pendant UNSORTED_TTL_DAYS pour laisser une chance que MusicBrainz s'enrichisse.
+    const UNSORTED_TTL_DAYS: i64 = 30;
     if let Some(mt) = mtime {
-        if let Ok(Some((status, dest_opt))) = cache.lookup_processed(&source_str, mt, size) {
-            if status == "organized" {
+        if let Ok(Some((status, dest_opt, last_seen))) = cache.lookup_processed(&source_str, mt, size) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let age_secs = now - last_seen;
+
+            let should_skip = match status.as_str() {
+                "organized" | "conflict" => true,
+                "unsorted" => age_secs < UNSORTED_TTL_DAYS * 86400,
+                _ => false,
+            };
+
+            if should_skip {
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {

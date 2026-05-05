@@ -91,6 +91,21 @@ impl Enricher {
             }
         }
 
+        // Étape 1ter : fallback dossier parent au format « Artist - Year - Album »
+        // ou « Artist - Album » (rip d'album sans tags rangé proprement)
+        if info.artist.is_none() || info.album.is_none() || info.year.is_none() {
+            let (fa, fy, fal) = tags::parse_folder_metadata(path);
+            if info.artist.is_none() {
+                info.artist = fa;
+            }
+            if info.album.is_none() {
+                info.album = fal;
+            }
+            if info.year.is_none() {
+                info.year = fy;
+            }
+        }
+
         if info.has_full_metadata() {
             return Ok(info);
         }

@@ -186,6 +186,54 @@ fn strip_track_prefix(s: &str) -> &str {
     }
 }
 
+/// Heuristique : extrait artist / year / album du nom du dossier parent du fichier.
+/// Reconnaît les patterns « Artist - Year - Album » et « Artist - Album ».
+/// Retourne (None, None, None) si le dossier ne matche aucun pattern reconnaissable
+/// ou s'il s'agit d'un dossier technique (commence par `_` ou `.`).
+pub fn parse_folder_metadata(path: &Path) -> (Option<String>, Option<u32>, Option<String>) {
+    let parent_name = match path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        Some(s) => s.trim(),
+        None => return (None, None, None),
+    };
+
+    if parent_name.is_empty()
+        || parent_name.starts_with('_')
+        || parent_name.starts_with('.')
+    {
+        return (None, None, None);
+    }
+
+    // Pattern 1 : « Artist - Year - Album » (year = 4 chiffres entre 1900 et 2100)
+    let triple: Vec<&str> = parent_name.splitn(3, " - ").collect();
+    if triple.len() == 3 {
+        if let Ok(year) = triple[1].trim().parse::<u32>() {
+            if (1900..=2100).contains(&year) {
+                let artist = triple[0].trim().to_string();
+                let album = triple[2].trim().to_string();
+                if !artist.is_empty() && !album.is_empty() {
+                    return (Some(artist), Some(year), Some(album));
+                }
+            }
+        }
+    }
+
+    // Pattern 2 : « Artist - Album » (un seul séparateur ` - `)
+    let pair: Vec<&str> = parent_name.splitn(2, " - ").collect();
+    if pair.len() == 2 {
+        let artist = pair[0].trim().to_string();
+        let album = pair[1].trim().to_string();
+        if !artist.is_empty() && !album.is_empty() {
+            return (Some(artist), None, Some(album));
+        }
+    }
+
+    (None, None, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +308,76 @@ mod tests {
         let (a, t) = parse_artist_title_from_filename(Path::new("100 - Track Title.mp3"));
         assert_eq!(a, None);
         assert_eq!(t, Some("Track Title".into()));
+    }
+
+    #[test]
+    fn test_parse_folder_artist_year_album() {
+        let (a, y, al) = parse_folder_metadata(Path::new(
+            "/music/Boards of Canada - 2002 - Geogaddi/01 track.mp3",
+        ));
+        assert_eq!(a, Some("Boards of Canada".into()));
+        assert_eq!(y, Some(2002));
+        assert_eq!(al, Some("Geogaddi".into()));
+    }
+
+    #[test]
+    fn test_parse_folder_artist_album_no_year() {
+        let (a, y, al) = parse_folder_metadata(Path::new(
+            "/music/Boards of Canada - Geogaddi/01 track.mp3",
+        ));
+        assert_eq!(a, Some("Boards of Canada".into()));
+        assert_eq!(y, None);
+        assert_eq!(al, Some("Geogaddi".into()));
+    }
+
+    #[test]
+    fn test_parse_folder_no_separator_returns_none() {
+        let (a, y, al) = parse_folder_metadata(Path::new(
+            "/music/JustAnAlbumName/track.mp3",
+        ));
+        assert_eq!(a, None);
+        assert_eq!(y, None);
+        assert_eq!(al, None);
+    }
+
+    #[test]
+    fn test_parse_folder_skips_underscore_prefix() {
+        let (a, _, al) = parse_folder_metadata(Path::new(
+            "/music/_unsorted/Foo - Bar/track.mp3",
+        ));
+        // Le parent direct (« Foo - Bar ») est valide ici, mais on saurait skip
+        // si c'était _unsorted lui-même qui contenait la file. Test vérifie que
+        // le filtre s'applique seulement au parent direct :
+        assert_eq!(a, Some("Foo".into()));
+        assert_eq!(al, Some("Bar".into()));
+    }
+
+    #[test]
+    fn test_parse_folder_skips_when_parent_starts_with_underscore() {
+        let (a, y, al) = parse_folder_metadata(Path::new("/music/_unsorted/track.mp3"));
+        assert_eq!(a, None);
+        assert_eq!(y, None);
+        assert_eq!(al, None);
+    }
+
+    #[test]
+    fn test_parse_folder_album_with_dashes() {
+        // « Album - With - Dashes » → artist=Artist, album="Album - With - Dashes"
+        let (a, _, al) = parse_folder_metadata(Path::new(
+            "/music/Artist - Album - With - Dashes/track.mp3",
+        ));
+        assert_eq!(a, Some("Artist".into()));
+        assert_eq!(al, Some("Album - With - Dashes".into()));
+    }
+
+    #[test]
+    fn test_parse_folder_year_out_of_range_falls_back() {
+        // « 999 » n'est pas une année valide → on retombe sur le pattern Artist - Album
+        let (a, y, al) = parse_folder_metadata(Path::new(
+            "/music/Artist - 999 - Album/track.mp3",
+        ));
+        assert_eq!(a, Some("Artist".into()));
+        assert_eq!(y, None);
+        assert_eq!(al, Some("999 - Album".into()));
     }
 }
