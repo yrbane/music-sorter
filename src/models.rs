@@ -16,6 +16,8 @@ pub struct TrackInfo {
 #[allow(dead_code)]
 pub enum ProcessResult {
     Organized { from: std::path::PathBuf, to: std::path::PathBuf },
+    /// Skip total via le cache : aucun appel API, aucune copie
+    CachedSkip { from: std::path::PathBuf, to: std::path::PathBuf },
     ConflictResolved { path: std::path::PathBuf, kept_bitrate: u32 },
     Unsorted { from: std::path::PathBuf, to: std::path::PathBuf },
     Error { path: std::path::PathBuf, reason: String },

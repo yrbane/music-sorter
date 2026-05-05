@@ -23,7 +23,9 @@ use crate::models::ProcessResult;
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
+use std::time::Instant;
 
 fn main() -> Result<()> {
     let config = config::Config::load()?;
@@ -77,6 +79,18 @@ fn main() -> Result<()> {
 
     let enricher = Enricher::new(&config, cache.clone())?;
 
+    // Barre de progression : auto-désactivée si stdout n'est pas un TTY
+    let bar = ProgressBar::new(files.len() as u64);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "  {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta})\n  {wide_msg}",
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏ "),
+    );
+    let bar = Arc::new(bar);
+
+    let started = Instant::now();
     let results: Vec<ProcessResult> = if args.workers > 1 {
         process_parallel(
             &files,
@@ -86,12 +100,15 @@ fn main() -> Result<()> {
             &args.target,
             args.do_move,
             args.workers,
+            &bar,
         )
     } else {
-        process_sequential(&files, &enricher, &cache, &args.source, &args.target, args.do_move)
+        process_sequential(&files, &enricher, &cache, &args.source, &args.target, args.do_move, &bar)
     };
+    let elapsed = started.elapsed();
+    bar.finish_and_clear();
 
-    print_summary(&results);
+    print_summary(&results, elapsed);
 
     // Cleanup post-run : en mode --move, supprime les dossiers source devenus vides
     if args.do_move {
@@ -110,10 +127,11 @@ fn process_sequential(
     source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
+    bar: &Arc<ProgressBar>,
 ) -> Vec<ProcessResult> {
     files
         .iter()
-        .map(|file| process_file(file, enricher, cache, source, target, do_move))
+        .map(|file| process_file(file, enricher, cache, source, target, do_move, bar))
         .collect()
 }
 
@@ -125,6 +143,7 @@ fn process_parallel(
     target: &std::path::Path,
     do_move: bool,
     workers: usize,
+    bar: &Arc<ProgressBar>,
 ) -> Vec<ProcessResult> {
     use rayon::prelude::*;
 
@@ -136,7 +155,7 @@ fn process_parallel(
     pool.install(|| {
         files
             .par_iter()
-            .map(|file| process_file(file, enricher, cache, source, target, do_move))
+            .map(|file| process_file(file, enricher, cache, source, target, do_move, bar))
             .collect()
     })
 }
@@ -148,8 +167,18 @@ fn process_file(
     source: &std::path::Path,
     target: &std::path::Path,
     do_move: bool,
+    bar: &Arc<ProgressBar>,
 ) -> ProcessResult {
     let filename = file.file_name().unwrap_or_default().to_string_lossy();
+    bar.set_message(filename.to_string());
+    // RAII guard : incrémente la barre dès qu'on quitte la fonction, quel que soit le chemin.
+    struct Tick<'a>(&'a ProgressBar);
+    impl Drop for Tick<'_> {
+        fn drop(&mut self) {
+            self.0.inc(1);
+        }
+    }
+    let _tick = Tick(bar);
 
     // Lecture des métadonnées du fichier source pour clé de cache (mtime + size)
     let metadata = match std::fs::metadata(file) {
@@ -175,8 +204,7 @@ fn process_file(
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {
-                        println!("  {} {} (cache)", "—".dimmed(), filename);
-                        return ProcessResult::Organized {
+                        return ProcessResult::CachedSkip {
                             from: file.to_path_buf(),
                             to: dest_pb,
                         };
@@ -194,7 +222,7 @@ fn process_file(
     let info = match enrich_result {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
-            eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
+            bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, None, "error");
             }
@@ -206,7 +234,7 @@ fn process_file(
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic interne (UTF-8 ?)".into());
-            eprintln!("  {} {} — PANIC : {}", "✗".red().bold(), filename, reason);
+            bar.println(format!("  {} {} — PANIC : {}", "✗".red().bold(), filename, reason));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, None, "error");
             }
@@ -227,15 +255,14 @@ fn process_file(
     match copy_result {
         Ok(organizer::CopyResult::Copied) => {
             if let Err(e) = tags::write_tags(&dest, &info) {
-                eprintln!("  {} {} — Copié mais erreur tags : {}", "⚠".yellow().bold(), filename, e);
+                bar.println(format!("  {} {} — Copié mais erreur tags : {}", "⚠".yellow().bold(), filename, e));
             }
 
             let is_unsorted = dest.to_string_lossy().contains("_unsorted");
             if is_unsorted {
-                println!("  {} {} → _unsorted/", "⚠".yellow().bold(), filename);
-            } else {
-                println!("  {} {} → {}", "✓".green().bold(), filename, dest.display());
+                bar.println(format!("  {} {} → _unsorted/", "⚠".yellow().bold(), filename));
             }
+            // Les succès ne s'affichent plus ligne par ligne : la barre + le résumé suffisent.
 
             if is_unsorted {
                 if let Some(mt) = mtime {
@@ -251,23 +278,23 @@ fn process_file(
         }
         Ok(organizer::CopyResult::Replaced { bitrate }) => {
             if let Err(e) = tags::write_tags(&dest, &info) {
-                eprintln!("  ⚠ Erreur écriture tags après remplacement : {}", e);
+                bar.println(format!("  ⚠ Erreur écriture tags après remplacement : {}", e));
             }
-            println!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate);
+            bar.println(format!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "conflict");
             }
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }
         Ok(organizer::CopyResult::Skipped { existing_bitrate }) => {
-            println!("  {} {} — ignoré (existant : {}kbps)", "—".dimmed(), filename, existing_bitrate);
+            bar.println(format!("  {} {} — ignoré (existant : {}kbps)", "—".dimmed(), filename, existing_bitrate));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
             }
             ProcessResult::Organized { from: file.to_path_buf(), to: dest }
         }
         Err(e) => {
-            eprintln!("  {} {} — {}", "✗".red().bold(), filename, e);
+            bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, None, "error");
             }
@@ -276,15 +303,27 @@ fn process_file(
     }
 }
 
-fn print_summary(results: &[ProcessResult]) {
+fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     let organized = results.iter().filter(|r| matches!(r, ProcessResult::Organized { .. })).count();
+    let cached = results.iter().filter(|r| matches!(r, ProcessResult::CachedSkip { .. })).count();
     let conflicts = results.iter().filter(|r| matches!(r, ProcessResult::ConflictResolved { .. })).count();
     let unsorted = results.iter().filter(|r| matches!(r, ProcessResult::Unsorted { .. })).count();
     let errors = results.iter().filter(|r| matches!(r, ProcessResult::Error { .. })).count();
 
+    let total = results.len();
+    let secs = elapsed.as_secs_f64().max(0.001);
+    let throughput = total as f64 / secs;
+
     println!("\n{}", "Traitement terminé :".bold());
     if organized > 0 { println!("  {} {} fichiers organisés", "✓".green().bold(), organized); }
+    if cached > 0    { println!("  {} {} ignorés depuis le cache (instantané)", "—".dimmed(), cached); }
     if conflicts > 0 { println!("  {} {} conflits résolus (meilleur bitrate conservé)", "↑".cyan().bold(), conflicts); }
-    if unsorted > 0 { println!("  {} {} fichiers non identifiés → _unsorted/", "⚠".yellow().bold(), unsorted); }
-    if errors > 0 { println!("  {} {} erreurs", "✗".red().bold(), errors); }
+    if unsorted > 0  { println!("  {} {} fichiers non identifiés → _unsorted/", "⚠".yellow().bold(), unsorted); }
+    if errors > 0    { println!("  {} {} erreurs", "✗".red().bold(), errors); }
+    println!(
+        "  {} en {:.1}s ({:.1} fichiers/s)",
+        "⏱".dimmed(),
+        secs,
+        throughput
+    );
 }
