@@ -20,6 +20,8 @@ const EXAMPLES: &str = "\
 \x1b[1;33mExemples :\x1b[0m
   \x1b[36mmusic-sorter --source ~/Téléchargements --target ~/Music\x1b[0m
   \x1b[36mmusic-sorter --workers 4 --move\x1b[0m
+  \x1b[36mmusic-sorter --dry-run\x1b[0m                                  \x1b[2m# simule, ne touche rien\x1b[0m
+  \x1b[36mmusic-sorter --target ~/Music --list-unsorted\x1b[0m         \x1b[2m# fichiers non rangés + raison\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --list-processed\x1b[0m         \x1b[2m# audit du cache\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --rollback\x1b[0m                \x1b[2m# dry-run\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --rollback --apply\x1b[0m         \x1b[2m# exécute\x1b[0m
@@ -56,6 +58,14 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub list_processed: bool,
 
+    /// Liste les fichiers non rangés (unsorted/error) avec leur raison puis quitte
+    #[arg(long, default_value_t = false)]
+    pub list_unsorted: bool,
+
+    /// Simule le tri sans rien copier/déplacer (rapport des destinations prévues)
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
     /// Défait les opérations passées en se basant sur le cache (dry-run par défaut)
     #[arg(long, default_value_t = false)]
     pub rollback: bool,
@@ -72,6 +82,8 @@ pub struct ResolvedArgs {
     pub workers: usize,
     pub do_move: bool,
     pub list_processed: bool,
+    pub list_unsorted: bool,
+    pub dry_run: bool,
     pub rollback: bool,
     pub apply: bool,
 }
@@ -106,6 +118,8 @@ impl Args {
             workers,
             do_move,
             list_processed: self.list_processed,
+            list_unsorted: self.list_unsorted,
+            dry_run: self.dry_run,
             rollback: self.rollback,
             apply: self.apply,
         }
@@ -172,6 +186,8 @@ mod tests {
             workers: Some(4),
             r#move: true,
             list_processed: false,
+            list_unsorted: false,
+            dry_run: false,
             rollback: false,
             apply: false,
         };
@@ -198,6 +214,8 @@ mod tests {
             workers: None,
             r#move: false,
             list_processed: false,
+            list_unsorted: false,
+            dry_run: false,
             rollback: false,
             apply: false,
         };
@@ -224,6 +242,8 @@ mod tests {
             workers: None,
             r#move: false,
             list_processed: false,
+            list_unsorted: false,
+            dry_run: false,
             rollback: false,
             apply: false,
         };

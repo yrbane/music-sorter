@@ -16,6 +16,15 @@ pub struct ProcessedEntry {
     pub last_seen: i64,
 }
 
+/// Entrée non rangée (status unsorted/error) exposée pour `--list-unsorted`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnsortedEntry {
+    pub source_path: String,
+    pub dest_path: Option<String>,
+    pub status: String,
+    pub note: Option<String>,
+}
+
 impl Cache {
     /// Liste toutes les entrées avec un dest_path défini, triées par date décroissante.
     pub fn list_all_processed(&self) -> Result<Vec<ProcessedEntry>> {
@@ -32,6 +41,30 @@ impl Cache {
                 dest_path: row.get(1)?,
                 status: row.get(2)?,
                 last_seen: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Liste les fichiers non rangés (status unsorted/error) pour `--list-unsorted`.
+    pub fn list_unsorted(&self) -> Result<Vec<UnsortedEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT source_path, dest_path, status, note
+             FROM processed_files
+             WHERE status IN ('unsorted', 'error')
+             ORDER BY last_seen DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(UnsortedEntry {
+                source_path: row.get(0)?,
+                dest_path: row.get(1)?,
+                status: row.get(2)?,
+                note: row.get(3)?,
             })
         })?;
         let mut out = Vec::new();
@@ -82,15 +115,28 @@ impl Cache {
         dest_path: Option<&str>,
         status: &str,
     ) -> Result<()> {
+        self.record_processed_note(source_path, mtime, size, dest_path, status, None)
+    }
+
+    /// Variante de `record_processed` avec une note (raison d'erreur, etc.).
+    pub fn record_processed_note(
+        &self,
+        source_path: &str,
+        mtime: i64,
+        size: i64,
+        dest_path: Option<&str>,
+        status: &str,
+        note: Option<&str>,
+    ) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO processed_files
-             (source_path, mtime, size, dest_path, status, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![source_path, mtime, size, dest_path, status, now],
+             (source_path, mtime, size, dest_path, status, last_seen, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![source_path, mtime, size, dest_path, status, now, note],
         )?;
         Ok(())
     }
@@ -226,7 +272,8 @@ impl Cache {
                 size        INTEGER NOT NULL,
                 dest_path   TEXT,
                 status      TEXT NOT NULL,
-                last_seen   INTEGER NOT NULL
+                last_seen   INTEGER NOT NULL,
+                note        TEXT
             );
             CREATE TABLE IF NOT EXISTS fingerprint_cache (
                 content_hash TEXT PRIMARY KEY,
@@ -253,6 +300,9 @@ impl Cache {
             );
             CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_files(status);
         "#)?;
+        // Migration : ajoute la colonne note aux bases créées avant son introduction.
+        // L'erreur « duplicate column name » est ignorée (colonne déjà présente).
+        let _ = conn.execute("ALTER TABLE processed_files ADD COLUMN note TEXT", []);
         Ok(())
     }
 }
@@ -392,6 +442,23 @@ mod tests {
         assert!(sources.contains(&"/a.mp3"));
         assert!(sources.contains(&"/b.mp3"));
         assert!(!sources.contains(&"/c.mp3"));
+    }
+
+    #[test]
+    fn test_list_unsorted_returns_unsorted_and_errors_with_note() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.record_processed("/ok.mp3", 1, 1, Some("/dst/ok.mp3"), "organized").unwrap();
+        cache.record_processed("/u.mp3", 2, 2, Some("/dst/_unsorted/u.mp3"), "unsorted").unwrap();
+        cache.record_processed_note("/e.mp3", 3, 3, None, "error", Some("panic UTF-8")).unwrap();
+
+        let entries = cache.list_unsorted().unwrap();
+        assert_eq!(entries.len(), 2, "organized exclu");
+        let by_src: std::collections::HashMap<_, _> =
+            entries.iter().map(|e| (e.source_path.as_str(), e)).collect();
+        assert_eq!(by_src["/u.mp3"].status, "unsorted");
+        assert_eq!(by_src["/e.mp3"].status, "error");
+        assert_eq!(by_src["/e.mp3"].note.as_deref(), Some("panic UTF-8"));
     }
 
     #[test]

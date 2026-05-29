@@ -30,6 +30,7 @@ use std::time::Instant;
 /// Options de run propagées à chaque worker (évite des signatures à rallonge).
 struct RunOptions {
     do_move: bool,
+    dry_run: bool,
     template: String,
     unsorted_ttl_days: i64,
 }
@@ -39,7 +40,7 @@ fn main() -> Result<()> {
     let args = cli::Args::parse().resolve(&config);
 
     // Modes spéciaux qui n'ont pas besoin du dossier source
-    if args.list_processed || args.rollback {
+    if args.list_processed || args.list_unsorted || args.rollback {
         // Le cache doit exister à l'emplacement de la target
         if !args.target.join(".music-sorter.db").exists() {
             eprintln!(
@@ -52,6 +53,9 @@ fn main() -> Result<()> {
         let cache = cache::Cache::open(&args.target)?;
         if args.list_processed {
             return rollback::print_list(&cache);
+        }
+        if args.list_unsorted {
+            return rollback::print_unsorted(&cache);
         }
         if args.rollback {
             rollback::run(&cache, args.apply)?;
@@ -97,8 +101,13 @@ fn main() -> Result<()> {
     );
     let bar = Arc::new(bar);
 
+    if args.dry_run {
+        println!("{}", "Mode DRY-RUN : aucun fichier ne sera copié/déplacé.".yellow().bold());
+    }
+
     let opts = Arc::new(RunOptions {
         do_move: args.do_move,
+        dry_run: args.dry_run,
         template: config
             .naming_template
             .clone()
@@ -127,7 +136,7 @@ fn main() -> Result<()> {
     print_summary(&results, elapsed);
 
     // Cleanup post-run : en mode --move, supprime les dossiers source devenus vides
-    if args.do_move {
+    if args.do_move && !args.dry_run {
         let removed = organizer::cleanup_empty_dirs(&args.source);
         if removed > 0 {
             println!("  {} {} dossiers source vides nettoyés", "·".dimmed(), removed);
@@ -253,7 +262,7 @@ fn process_file(
         Ok(Err(e)) => {
             bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+                let _ = cache.record_processed_note(&source_str, mt, size, None, "error", Some(&e.to_string()));
             }
             return ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() };
         }
@@ -265,7 +274,7 @@ fn process_file(
                 .unwrap_or_else(|| "panic interne (UTF-8 ?)".into());
             bar.println(format!("  {} {} — PANIC : {}", "✗".red().bold(), filename, reason));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+                let _ = cache.record_processed_note(&source_str, mt, size, None, "error", Some(&reason));
             }
             return ProcessResult::Error { path: file.to_path_buf(), reason };
         }
@@ -274,6 +283,18 @@ fn process_file(
     let dest = organizer::build_destination_path_with_template(
         target, &info, file, source, &opts.template,
     );
+
+    // Mode dry-run : on a tout calculé (y compris l'enrichissement API), mais on
+    // n'écrit rien sur le disque et on ne touche pas au cache processed_files.
+    if opts.dry_run {
+        let is_unsorted = dest.to_string_lossy().contains("_unsorted");
+        if is_unsorted {
+            bar.println(format!("  {} {} → _unsorted/", "⚠".yellow().bold(), filename));
+            return ProcessResult::Unsorted { from: file.to_path_buf(), to: dest };
+        }
+        bar.println(format!("  {} {} → {}", "→".cyan().bold(), filename, dest.display()));
+        return ProcessResult::Organized { from: file.to_path_buf(), to: dest };
+    }
 
     // En mode --move : rename(2) atomique sur même FS, sinon copy + delete (cross-FS).
     // La source est consommée par move_to_destination dans tous les cas de succès.

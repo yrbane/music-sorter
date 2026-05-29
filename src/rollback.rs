@@ -3,6 +3,26 @@ use anyhow::Result;
 use colored::Colorize;
 use std::path::Path;
 
+/// Liste les fichiers non rangés (status unsorted/error) avec leur raison.
+pub fn print_unsorted(cache: &Cache) -> Result<()> {
+    let entries = cache.list_unsorted()?;
+    if entries.is_empty() {
+        println!("Aucun fichier non rangé dans le cache.");
+        return Ok(());
+    }
+    println!("{} fichiers non rangés :\n", entries.len());
+    for e in &entries {
+        let reason = e.note.as_deref().unwrap_or("non identifié");
+        println!(
+            "  [{}] {} {}",
+            e.status.yellow(),
+            e.source_path,
+            format!("({})", reason).dimmed()
+        );
+    }
+    Ok(())
+}
+
 /// Action déterminée pour une entrée à rollback.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RollbackAction {
