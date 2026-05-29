@@ -34,6 +34,8 @@ struct RunOptions {
     dry_run: bool,
     resume: bool,
     dedup: bool,
+    quarantine: bool,
+    fix_tags: bool,
     template: String,
     unsorted_ttl_days: i64,
     /// Passé à true par le handler Ctrl-C : les workers restants s'arrêtent net.
@@ -126,6 +128,8 @@ fn main() -> Result<()> {
         dry_run: args.dry_run,
         resume: args.resume,
         dedup: config.dedup_enabled.unwrap_or(true),
+        quarantine: config.quarantine_enabled.unwrap_or(true),
+        fix_tags: args.fix_tags || config.fix_tags.unwrap_or(false),
         template: config
             .naming_template
             .clone()
@@ -302,8 +306,8 @@ fn process_file(
         enricher.enrich(file)
     }));
 
-    let info = match enrich_result {
-        Ok(Ok(info)) => info,
+    let (info, confidence) = match enrich_result {
+        Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
             bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
@@ -325,9 +329,22 @@ fn process_file(
         }
     };
 
-    let dest = organizer::build_destination_path_with_template(
+    let mut dest = organizer::build_destination_path_with_template(
         target, &info, file, source, &opts.template,
     );
+
+    // Quarantaine : un match de faible confiance (heuristique seule) part en _review/
+    // au lieu de polluer l'arborescence principale. Les _unsorted restent inchangés.
+    let is_unsorted_dest = dest.to_string_lossy().contains("_unsorted");
+    if opts.quarantine
+        && confidence == crate::models::Confidence::Low
+        && !is_unsorted_dest
+    {
+        dest = organizer::redirect_to_review(target, &dest);
+    }
+
+    // En mode --fix-tags, on n'écrase les tags que sur un match sûr (High).
+    let overwrite_tags = opts.fix_tags && confidence == crate::models::Confidence::High;
 
     // Mode dry-run : on a tout calculé (y compris l'enrichissement API), mais on
     // n'écrit rien sur le disque et on ne touche pas au cache processed_files.
@@ -351,7 +368,7 @@ fn process_file(
 
     match copy_result {
         Ok(organizer::CopyResult::Copied) => {
-            if let Err(e) = tags::write_tags(&dest, &info) {
+            if let Err(e) = tags::write_tags(&dest, &info, overwrite_tags) {
                 bar.println(format!("  {} {} — Copié mais erreur tags : {}", "⚠".yellow().bold(), filename, e));
             }
 
@@ -377,7 +394,7 @@ fn process_file(
             }
         }
         Ok(organizer::CopyResult::Replaced { bitrate }) => {
-            if let Err(e) = tags::write_tags(&dest, &info) {
+            if let Err(e) = tags::write_tags(&dest, &info, overwrite_tags) {
                 bar.println(format!("  ⚠ Erreur écriture tags après remplacement : {}", e));
             }
             bar.println(format!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate));

@@ -53,8 +53,23 @@ pub fn get_bitrate(path: &Path) -> Result<u32> {
     Ok(bitrate)
 }
 
-/// Écrit les tags enrichis dans un fichier (remplit seulement les champs manquants)
-pub fn write_tags(path: &Path, info: &TrackInfo) -> Result<()> {
+/// Calcule la valeur à écrire pour un champ de tag.
+/// - overwrite=true  : écrit la valeur enrichie (si présente), sinon laisse en place.
+/// - overwrite=false : n'écrit que si le champ existant est absent (fill-missing).
+fn tag_value_to_set<T>(existing_present: bool, enriched: Option<T>, overwrite: bool) -> Option<T> {
+    if overwrite {
+        enriched
+    } else if existing_present {
+        None
+    } else {
+        enriched
+    }
+}
+
+/// Écrit les tags enrichis dans un fichier.
+/// `overwrite=false` ne remplit que les champs manquants ; `overwrite=true`
+/// écrase avec les valeurs canoniques enrichies (utilisé avec --fix-tags sur match sûr).
+pub fn write_tags(path: &Path, info: &TrackInfo, overwrite: bool) -> Result<()> {
     // Ouvre le fichier de façon mutable via BoundTaggedFile
     let mut tagged_file = lofty::read_from_path(path)
         .with_context(|| format!("Impossible de lire : {}", path.display()))?;
@@ -71,41 +86,27 @@ pub fn write_tags(path: &Path, info: &TrackInfo) -> Result<()> {
             .primary_tag_mut()
             .expect("Le tag vient d'être créé");
 
-        // Ne remplit que les champs manquants dans le tag existant
-        if tag.artist().is_none() {
-            if let Some(artist) = &info.artist {
-                tag.set_artist(artist.clone());
-            }
+        // Remplit (ou écrase si overwrite) chaque champ selon tag_value_to_set
+        if let Some(v) = tag_value_to_set(tag.artist().is_some(), info.artist.clone(), overwrite) {
+            tag.set_artist(v);
         }
-        if tag.album().is_none() {
-            if let Some(album) = &info.album {
-                tag.set_album(album.clone());
-            }
+        if let Some(v) = tag_value_to_set(tag.album().is_some(), info.album.clone(), overwrite) {
+            tag.set_album(v);
         }
-        if tag.title().is_none() {
-            if let Some(title) = &info.title {
-                tag.set_title(title.clone());
-            }
+        if let Some(v) = tag_value_to_set(tag.title().is_some(), info.title.clone(), overwrite) {
+            tag.set_title(v);
         }
-        if tag.year().is_none() {
-            if let Some(year) = info.year {
-                tag.set_year(year);
-            }
+        if let Some(v) = tag_value_to_set(tag.year().is_some(), info.year, overwrite) {
+            tag.set_year(v);
         }
-        if tag.track().is_none() {
-            if let Some(track) = info.track_number {
-                tag.set_track(track);
-            }
+        if let Some(v) = tag_value_to_set(tag.track().is_some(), info.track_number, overwrite) {
+            tag.set_track(v);
         }
-        if tag.track_total().is_none() {
-            if let Some(total) = info.total_tracks {
-                tag.set_track_total(total);
-            }
+        if let Some(v) = tag_value_to_set(tag.track_total().is_some(), info.total_tracks, overwrite) {
+            tag.set_track_total(v);
         }
-        if tag.genre().is_none() {
-            if let Some(genre) = &info.genre {
-                tag.set_genre(genre.clone());
-            }
+        if let Some(v) = tag_value_to_set(tag.genre().is_some(), info.genre.clone(), overwrite) {
+            tag.set_genre(v);
         }
 
         // Intègre la pochette si le tag n'en a pas et que info en a une
@@ -237,6 +238,21 @@ pub fn parse_folder_metadata(path: &Path) -> (Option<String>, Option<u32>, Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tag_value_fill_missing_only_when_absent() {
+        // overwrite=false : absent → enrichi ; présent → None (on garde l'existant)
+        assert_eq!(tag_value_to_set(false, Some("x"), false), Some("x"));
+        assert_eq!(tag_value_to_set(true, Some("x"), false), None);
+    }
+
+    #[test]
+    fn test_tag_value_overwrite_uses_enriched() {
+        // overwrite=true : écrit l'enrichi même si présent ; None si pas d'enrichi
+        assert_eq!(tag_value_to_set(true, Some("x"), true), Some("x"));
+        assert_eq!(tag_value_to_set(false, Some("x"), true), Some("x"));
+        assert_eq!(tag_value_to_set::<&str>(true, None, true), None);
+    }
 
     #[test]
     fn test_read_tags_nonexistent_file() {

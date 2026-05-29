@@ -105,8 +105,9 @@ pub fn render_relative_path(template: &str, info: &TrackInfo, ext: &str) -> Path
     path
 }
 
-/// Construit le chemin de destination d'un fichier audio
+/// Construit le chemin de destination d'un fichier audio (template par défaut).
 /// `source_root` permet de reconstruire la structure relative dans `_unsorted/`
+#[allow(dead_code)]
 pub fn build_destination_path(
     target: &Path,
     info: &TrackInfo,
@@ -156,6 +157,15 @@ pub fn build_destination_path_with_template(
     }
 
     target.join(relative)
+}
+
+/// Rebase une destination organisée sous `target/_review/` (zone de quarantaine
+/// pour les matchs de faible confiance). Si `dest` n'est pas sous `target`, no-op.
+pub fn redirect_to_review(target: &Path, dest: &Path) -> PathBuf {
+    match dest.strip_prefix(target) {
+        Ok(rel) => target.join("_review").join(rel),
+        Err(_) => dest.to_path_buf(),
+    }
 }
 
 /// Copie via reflink (CoW, instantané sur btrfs/xfs/zfs).
@@ -403,6 +413,24 @@ mod tests {
             result,
             target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
         );
+    }
+
+    #[test]
+    fn test_redirect_to_review_rebases_under_review() {
+        let target = Path::new("/music");
+        let dest = Path::new("/music/Artist - 2020 - Album/01 - Title.mp3");
+        let review = redirect_to_review(target, dest);
+        assert_eq!(
+            review,
+            Path::new("/music/_review/Artist - 2020 - Album/01 - Title.mp3")
+        );
+    }
+
+    #[test]
+    fn test_redirect_to_review_noop_when_not_under_target() {
+        let target = Path::new("/music");
+        let dest = Path::new("/elsewhere/x.mp3");
+        assert_eq!(redirect_to_review(target, dest), dest.to_path_buf());
     }
 
     #[test]

@@ -28,6 +28,19 @@ fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo, cache: &crate::ca
     info.merge(db_info);
 }
 
+/// Détermine la confiance d'un enrichissement.
+/// - match API → High ; sinon tags embarqués complets → Medium ; sinon Low.
+fn compute_confidence(had_embedded_org: bool, api_matched: bool) -> crate::models::Confidence {
+    use crate::models::Confidence;
+    if api_matched {
+        Confidence::High
+    } else if had_embedded_org {
+        Confidence::Medium
+    } else {
+        Confidence::Low
+    }
+}
+
 pub struct Enricher {
     musicbrainz: MusicBrainzClient,
     discogs: Option<DiscogsClient>,
@@ -74,10 +87,14 @@ impl Enricher {
         })
     }
 
-    /// Enrichit les métadonnées d'un fichier audio
-    pub fn enrich(&self, path: &Path) -> Result<TrackInfo> {
+    /// Enrichit les métadonnées d'un fichier audio.
+    /// Retourne aussi le niveau de confiance (cf. Confidence) pour router les matchs faibles.
+    pub fn enrich(&self, path: &Path) -> Result<(TrackInfo, crate::models::Confidence)> {
         // Étape 1 : lecture des tags existants
         let mut info = tags::read_tags(path).unwrap_or_default();
+
+        // Mémorise si les tags EMBARQUÉS (avant heuristiques) suffisaient à organiser.
+        let had_embedded_org = info.has_minimum_for_organization();
 
         // Étape 1bis : fallback nom de fichier si artist/title manquent
         // (utile pour les fichiers téléchargés sans tags ID3)
@@ -107,7 +124,8 @@ impl Enricher {
         }
 
         if info.has_full_metadata() {
-            return Ok(info);
+            // Métadonnées complètes sans appel API : confiance basée sur les tags embarqués.
+            return Ok((info, compute_confidence(had_embedded_org, false)));
         }
 
         let mut release_id: Option<String> = None;
@@ -204,7 +222,8 @@ impl Enricher {
             }
         }
 
-        Ok(info)
+        let confidence = compute_confidence(had_embedded_org, release_id.is_some());
+        Ok((info, confidence))
     }
 }
 
@@ -213,6 +232,25 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_confidence_high_when_api_matched() {
+        use crate::models::Confidence;
+        assert_eq!(compute_confidence(false, true), Confidence::High);
+        assert_eq!(compute_confidence(true, true), Confidence::High);
+    }
+
+    #[test]
+    fn test_confidence_medium_when_embedded_tags_no_api() {
+        use crate::models::Confidence;
+        assert_eq!(compute_confidence(true, false), Confidence::Medium);
+    }
+
+    #[test]
+    fn test_confidence_low_when_heuristic_only() {
+        use crate::models::Confidence;
+        assert_eq!(compute_confidence(false, false), Confidence::Low);
+    }
 
     #[test]
     fn test_override_canonicalizes_artist() {

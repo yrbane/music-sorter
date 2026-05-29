@@ -21,6 +21,7 @@ const EXAMPLES: &str = "\
   \x1b[36mmusic-sorter --source ~/Téléchargements --target ~/Music\x1b[0m
   \x1b[36mmusic-sorter --workers 4 --move\x1b[0m
   \x1b[36mmusic-sorter --dry-run\x1b[0m                                  \x1b[2m# simule, ne touche rien\x1b[0m
+  \x1b[36mmusic-sorter --move --fix-tags --resume\x1b[0m                  \x1b[2m# range, corrige les tags, reprend\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --list-unsorted\x1b[0m         \x1b[2m# fichiers non rangés + raison\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --list-processed\x1b[0m         \x1b[2m# audit du cache\x1b[0m
   \x1b[36mmusic-sorter --target ~/Music --rollback\x1b[0m                \x1b[2m# dry-run\x1b[0m
@@ -70,6 +71,10 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
+    /// Réécrit les tags canoniques (MusicBrainz/Discogs) dans les fichiers sur match sûr
+    #[arg(long, default_value_t = false)]
+    pub fix_tags: bool,
+
     /// Défait les opérations passées en se basant sur le cache (dry-run par défaut)
     #[arg(long, default_value_t = false)]
     pub rollback: bool,
@@ -89,6 +94,7 @@ pub struct ResolvedArgs {
     pub list_unsorted: bool,
     pub dry_run: bool,
     pub resume: bool,
+    pub fix_tags: bool,
     pub rollback: bool,
     pub apply: bool,
 }
@@ -126,6 +132,7 @@ impl Args {
             list_unsorted: self.list_unsorted,
             dry_run: self.dry_run,
             resume: self.resume,
+            fix_tags: self.fix_tags,
             rollback: self.rollback,
             apply: self.apply,
         }
@@ -195,6 +202,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            fix_tags: false,
             rollback: false,
             apply: false,
         };
@@ -224,6 +232,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            fix_tags: false,
             rollback: false,
             apply: false,
         };
@@ -253,6 +262,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            fix_tags: false,
             rollback: false,
             apply: false,
         };

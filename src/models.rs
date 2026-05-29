@@ -11,6 +11,17 @@ pub struct TrackInfo {
     pub cover_art: Option<Vec<u8>>,
 }
 
+/// Niveau de confiance d'un enrichissement, pour router les matchs faibles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confidence {
+    /// Confirmé par une API (AcoustID/MusicBrainz).
+    High,
+    /// Tags embarqués complets, sans confirmation API.
+    Medium,
+    /// Organisable uniquement grâce aux heuristiques (nom de fichier/dossier).
+    Low,
+}
+
 /// Résultat du traitement d'un fichier
 #[derive(Debug)]
 #[allow(dead_code)]
