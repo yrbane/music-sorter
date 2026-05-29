@@ -141,6 +141,34 @@ impl Cache {
         Ok(())
     }
 
+    /// Retourne la destination déjà enregistrée pour un hash de contenu, si connue.
+    pub fn lookup_content(&self, content_hash: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT dest_path FROM content_index WHERE content_hash = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![content_hash])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Associe un hash de contenu à sa destination. La première destination gagne
+    /// (INSERT OR IGNORE) : les doublons ultérieurs pointent vers l'original.
+    pub fn record_content(&self, content_hash: &str, dest_path: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO content_index (content_hash, dest_path, recorded_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![content_hash, dest_path, now],
+        )?;
+        Ok(())
+    }
+
     pub fn lookup_fingerprint(&self, content_hash: &str) -> Result<Option<(String, i64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -298,6 +326,11 @@ impl Cache {
                 canonical       TEXT NOT NULL,
                 mbid            TEXT
             );
+            CREATE TABLE IF NOT EXISTS content_index (
+                content_hash TEXT PRIMARY KEY,
+                dest_path    TEXT NOT NULL,
+                recorded_at  INTEGER NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_files(status);
         "#)?;
         // Migration : ajoute la colonne note aux bases créées avant son introduction.
@@ -442,6 +475,28 @@ mod tests {
         assert!(sources.contains(&"/a.mp3"));
         assert!(sources.contains(&"/b.mp3"));
         assert!(!sources.contains(&"/c.mp3"));
+    }
+
+    #[test]
+    fn test_content_index_miss_then_hit() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        assert!(cache.lookup_content("deadbeef").unwrap().is_none());
+        cache.record_content("deadbeef", "/dst/song.mp3").unwrap();
+        assert_eq!(
+            cache.lookup_content("deadbeef").unwrap(),
+            Some("/dst/song.mp3".into())
+        );
+    }
+
+    #[test]
+    fn test_content_index_keeps_first_dest() {
+        // Un second enregistrement du même hash ne doit pas écraser la 1re destination.
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.record_content("h", "/dst/first.mp3").unwrap();
+        cache.record_content("h", "/dst/second.mp3").unwrap();
+        assert_eq!(cache.lookup_content("h").unwrap(), Some("/dst/first.mp3".into()));
     }
 
     #[test]

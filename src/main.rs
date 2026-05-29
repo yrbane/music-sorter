@@ -33,6 +33,7 @@ struct RunOptions {
     do_move: bool,
     dry_run: bool,
     resume: bool,
+    dedup: bool,
     template: String,
     unsorted_ttl_days: i64,
     /// Passé à true par le handler Ctrl-C : les workers restants s'arrêtent net.
@@ -124,6 +125,7 @@ fn main() -> Result<()> {
         do_move: args.do_move,
         dry_run: args.dry_run,
         resume: args.resume,
+        dedup: config.dedup_enabled.unwrap_or(true),
         template: config
             .naming_template
             .clone()
@@ -268,6 +270,33 @@ fn process_file(
         }
     }
 
+    // Détection de doublons par hash de contenu : si un fichier au contenu identique
+    // a déjà été rangé ailleurs, on l'ignore (et on consomme la source en mode --move).
+    // Calculé avant l'enrichissement pour économiser aussi les appels API.
+    let content_hash: Option<String> = if opts.dedup && !opts.dry_run {
+        match cache_keys::content_hash(file) {
+            Ok(h) => {
+                if let Ok(Some(existing)) = cache.lookup_content(&h) {
+                    if std::path::Path::new(&existing).exists() {
+                        bar.println(format!("  {} {} — doublon de {}", "⧉".cyan().bold(), filename, existing));
+                        let of = std::path::PathBuf::from(&existing);
+                        if opts.do_move {
+                            let _ = std::fs::remove_file(file);
+                        }
+                        if let Some(mt) = mtime {
+                            let _ = cache.record_processed(&source_str, mt, size, Some(&existing), "organized");
+                        }
+                        return ProcessResult::Duplicate { from: file.to_path_buf(), of };
+                    }
+                }
+                Some(h)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     // Catch des panics éventuels (bugs UTF-8 dans lofty, etc.) pour que le run continue
     let enrich_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         enricher.enrich(file)
@@ -341,6 +370,9 @@ fn process_file(
                 if let Some(mt) = mtime {
                     let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
                 }
+                if let Some(h) = &content_hash {
+                    let _ = cache.record_content(h, &dest.to_string_lossy());
+                }
                 ProcessResult::Organized { from: file.to_path_buf(), to: dest }
             }
         }
@@ -351,6 +383,9 @@ fn process_file(
             bar.println(format!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "conflict");
+            }
+            if let Some(h) = &content_hash {
+                let _ = cache.record_content(h, &dest.to_string_lossy());
             }
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }
