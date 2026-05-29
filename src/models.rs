@@ -20,6 +20,10 @@ pub enum ProcessResult {
     CachedSkip { from: std::path::PathBuf, to: std::path::PathBuf },
     ConflictResolved { path: std::path::PathBuf, kept_bitrate: u32 },
     Unsorted { from: std::path::PathBuf, to: std::path::PathBuf },
+    /// Doublon de contenu : un fichier au contenu identique a déjà été rangé.
+    Duplicate { from: std::path::PathBuf, of: std::path::PathBuf },
+    /// Traitement abandonné suite à une interruption (Ctrl-C) : non traité, non enregistré.
+    Interrupted { path: std::path::PathBuf },
     Error { path: std::path::PathBuf, reason: String },
 }
 

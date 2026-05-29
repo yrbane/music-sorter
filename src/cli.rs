@@ -66,6 +66,10 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
 
+    /// Reprend après interruption : skip aussi les _unsorted déjà vus (ignore le TTL)
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+
     /// Défait les opérations passées en se basant sur le cache (dry-run par défaut)
     #[arg(long, default_value_t = false)]
     pub rollback: bool,
@@ -84,6 +88,7 @@ pub struct ResolvedArgs {
     pub list_processed: bool,
     pub list_unsorted: bool,
     pub dry_run: bool,
+    pub resume: bool,
     pub rollback: bool,
     pub apply: bool,
 }
@@ -120,6 +125,7 @@ impl Args {
             list_processed: self.list_processed,
             list_unsorted: self.list_unsorted,
             dry_run: self.dry_run,
+            resume: self.resume,
             rollback: self.rollback,
             apply: self.apply,
         }
@@ -188,6 +194,7 @@ mod tests {
             list_processed: false,
             list_unsorted: false,
             dry_run: false,
+            resume: false,
             rollback: false,
             apply: false,
         };
@@ -216,6 +223,7 @@ mod tests {
             list_processed: false,
             list_unsorted: false,
             dry_run: false,
+            resume: false,
             rollback: false,
             apply: false,
         };
@@ -244,6 +252,7 @@ mod tests {
             list_processed: false,
             list_unsorted: false,
             dry_run: false,
+            resume: false,
             rollback: false,
             apply: false,
         };

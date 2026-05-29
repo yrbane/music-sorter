@@ -24,6 +24,7 @@ use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -31,8 +32,11 @@ use std::time::Instant;
 struct RunOptions {
     do_move: bool,
     dry_run: bool,
+    resume: bool,
     template: String,
     unsorted_ttl_days: i64,
+    /// Passé à true par le handler Ctrl-C : les workers restants s'arrêtent net.
+    interrupted: Arc<AtomicBool>,
 }
 
 fn main() -> Result<()> {
@@ -105,14 +109,27 @@ fn main() -> Result<()> {
         println!("{}", "Mode DRY-RUN : aucun fichier ne sera copié/déplacé.".yellow().bold());
     }
 
+    // Handler Ctrl-C : bascule le flag partagé. Le cache WAL persiste chaque fichier
+    // déjà traité, donc une relance reprend automatiquement là où on s'est arrêté.
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let flag = interrupted.clone();
+        let _ = ctrlc::set_handler(move || {
+            flag.store(true, Ordering::SeqCst);
+            eprintln!("\n{}", "Interruption demandée — arrêt après le fichier en cours…".yellow().bold());
+        });
+    }
+
     let opts = Arc::new(RunOptions {
         do_move: args.do_move,
         dry_run: args.dry_run,
+        resume: args.resume,
         template: config
             .naming_template
             .clone()
             .unwrap_or_else(|| organizer::DEFAULT_TEMPLATE.to_string()),
         unsorted_ttl_days: config.unsorted_ttl_days.unwrap_or(30),
+        interrupted,
     });
 
     let started = Instant::now();
@@ -194,6 +211,11 @@ fn process_file(
     opts: &Arc<RunOptions>,
     bar: &Arc<ProgressBar>,
 ) -> ProcessResult {
+    // Interruption (Ctrl-C) : on arrête net sans traiter ni enregistrer.
+    if opts.interrupted.load(Ordering::SeqCst) {
+        return ProcessResult::Interrupted { path: file.to_path_buf() };
+    }
+
     let filename = file.file_name().unwrap_or_default().to_string_lossy();
     bar.set_message(filename.to_string());
     // RAII guard : incrémente la barre dès qu'on quitte la fonction, quel que soit le chemin.
@@ -232,13 +254,7 @@ fn process_file(
                 .unwrap_or(0);
             let age_secs = now - last_seen;
 
-            let should_skip = match status.as_str() {
-                "organized" | "conflict" => true,
-                "unsorted" => age_secs < opts.unsorted_ttl_days * 86400,
-                _ => false,
-            };
-
-            if should_skip {
+            if should_skip_cached(&status, age_secs, opts.unsorted_ttl_days, opts.resume) {
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {
@@ -355,11 +371,25 @@ fn process_file(
     }
 }
 
+/// Décide si une entrée déjà vue en cache doit être skippée sans retraitement.
+/// - organized/conflict : toujours skip (le fichier est rangé).
+/// - unsorted : skip pendant `ttl_days`, ou toujours en mode `resume`.
+/// - autre (error, ...) : jamais skip (on retente).
+fn should_skip_cached(status: &str, age_secs: i64, ttl_days: i64, resume: bool) -> bool {
+    match status {
+        "organized" | "conflict" => true,
+        "unsorted" => resume || age_secs < ttl_days * 86400,
+        _ => false,
+    }
+}
+
 fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     let organized = results.iter().filter(|r| matches!(r, ProcessResult::Organized { .. })).count();
     let cached = results.iter().filter(|r| matches!(r, ProcessResult::CachedSkip { .. })).count();
     let conflicts = results.iter().filter(|r| matches!(r, ProcessResult::ConflictResolved { .. })).count();
     let unsorted = results.iter().filter(|r| matches!(r, ProcessResult::Unsorted { .. })).count();
+    let duplicates = results.iter().filter(|r| matches!(r, ProcessResult::Duplicate { .. })).count();
+    let interrupted = results.iter().filter(|r| matches!(r, ProcessResult::Interrupted { .. })).count();
     let errors = results.iter().filter(|r| matches!(r, ProcessResult::Error { .. })).count();
 
     let total = results.len();
@@ -371,6 +401,8 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     if cached > 0    { println!("  {} {} ignorés depuis le cache (instantané)", "—".dimmed(), cached); }
     if conflicts > 0 { println!("  {} {} conflits résolus (meilleur bitrate conservé)", "↑".cyan().bold(), conflicts); }
     if unsorted > 0  { println!("  {} {} fichiers non identifiés → _unsorted/", "⚠".yellow().bold(), unsorted); }
+    if duplicates > 0 { println!("  {} {} doublons de contenu ignorés", "⧉".cyan().bold(), duplicates); }
+    if interrupted > 0 { println!("  {} {} non traités (interruption)", "⏹".yellow().bold(), interrupted); }
     if errors > 0    { println!("  {} {} erreurs", "✗".red().bold(), errors); }
     println!(
         "  {} en {:.1}s ({:.1} fichiers/s)",
@@ -378,4 +410,39 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
         secs,
         throughput
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_cached;
+
+    #[test]
+    fn test_skip_organized_always() {
+        assert!(should_skip_cached("organized", 999_999_999, 30, false));
+        assert!(should_skip_cached("conflict", 999_999_999, 30, false));
+    }
+
+    #[test]
+    fn test_skip_unsorted_within_ttl() {
+        // 10 jours < 30 jours → skip
+        assert!(should_skip_cached("unsorted", 10 * 86400, 30, false));
+    }
+
+    #[test]
+    fn test_no_skip_unsorted_past_ttl() {
+        // 40 jours > 30 jours → on retente
+        assert!(!should_skip_cached("unsorted", 40 * 86400, 30, false));
+    }
+
+    #[test]
+    fn test_resume_forces_skip_unsorted_past_ttl() {
+        // En mode resume, on skip même au-delà du TTL
+        assert!(should_skip_cached("unsorted", 40 * 86400, 30, true));
+    }
+
+    #[test]
+    fn test_no_skip_error() {
+        assert!(!should_skip_cached("error", 0, 30, false));
+        assert!(!should_skip_cached("error", 0, 30, true));
+    }
 }
