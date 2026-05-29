@@ -27,6 +27,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Options de run propagées à chaque worker (évite des signatures à rallonge).
+struct RunOptions {
+    do_move: bool,
+    template: String,
+    unsorted_ttl_days: i64,
+}
+
 fn main() -> Result<()> {
     let config = config::Config::load()?;
     let args = cli::Args::parse().resolve(&config);
@@ -90,6 +97,15 @@ fn main() -> Result<()> {
     );
     let bar = Arc::new(bar);
 
+    let opts = Arc::new(RunOptions {
+        do_move: args.do_move,
+        template: config
+            .naming_template
+            .clone()
+            .unwrap_or_else(|| organizer::DEFAULT_TEMPLATE.to_string()),
+        unsorted_ttl_days: config.unsorted_ttl_days.unwrap_or(30),
+    });
+
     let started = Instant::now();
     let results: Vec<ProcessResult> = if args.workers > 1 {
         process_parallel(
@@ -98,12 +114,12 @@ fn main() -> Result<()> {
             &cache,
             &args.source,
             &args.target,
-            args.do_move,
+            &opts,
             args.workers,
             &bar,
         )
     } else {
-        process_sequential(&files, &enricher, &cache, &args.source, &args.target, args.do_move, &bar)
+        process_sequential(&files, &enricher, &cache, &args.source, &args.target, &opts, &bar)
     };
     let elapsed = started.elapsed();
     bar.finish_and_clear();
@@ -126,12 +142,12 @@ fn process_sequential(
     cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
-    do_move: bool,
+    opts: &Arc<RunOptions>,
     bar: &Arc<ProgressBar>,
 ) -> Vec<ProcessResult> {
     files
         .iter()
-        .map(|file| process_file(file, enricher, cache, source, target, do_move, bar))
+        .map(|file| process_file(file, enricher, cache, source, target, opts, bar))
         .collect()
 }
 
@@ -141,7 +157,7 @@ fn process_parallel(
     cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
-    do_move: bool,
+    opts: &Arc<RunOptions>,
     workers: usize,
     bar: &Arc<ProgressBar>,
 ) -> Vec<ProcessResult> {
@@ -155,7 +171,7 @@ fn process_parallel(
     pool.install(|| {
         files
             .par_iter()
-            .map(|file| process_file(file, enricher, cache, source, target, do_move, bar))
+            .map(|file| process_file(file, enricher, cache, source, target, opts, bar))
             .collect()
     })
 }
@@ -166,7 +182,7 @@ fn process_file(
     cache: &Arc<cache::Cache>,
     source: &std::path::Path,
     target: &std::path::Path,
-    do_move: bool,
+    opts: &Arc<RunOptions>,
     bar: &Arc<ProgressBar>,
 ) -> ProcessResult {
     let filename = file.file_name().unwrap_or_default().to_string_lossy();
@@ -198,8 +214,7 @@ fn process_file(
     let source_str = file.to_string_lossy().into_owned();
 
     // Skip total via cache : organized/conflict toujours skip ; unsorted skip seulement
-    // pendant UNSORTED_TTL_DAYS pour laisser une chance que MusicBrainz s'enrichisse.
-    const UNSORTED_TTL_DAYS: i64 = 30;
+    // pendant unsorted_ttl_days pour laisser une chance que MusicBrainz s'enrichisse.
     if let Some(mt) = mtime {
         if let Ok(Some((status, dest_opt, last_seen))) = cache.lookup_processed(&source_str, mt, size) {
             let now = std::time::SystemTime::now()
@@ -210,7 +225,7 @@ fn process_file(
 
             let should_skip = match status.as_str() {
                 "organized" | "conflict" => true,
-                "unsorted" => age_secs < UNSORTED_TTL_DAYS * 86400,
+                "unsorted" => age_secs < opts.unsorted_ttl_days * 86400,
                 _ => false,
             };
 
@@ -256,11 +271,13 @@ fn process_file(
         }
     };
 
-    let dest = organizer::build_destination_path(target, &info, file, source);
+    let dest = organizer::build_destination_path_with_template(
+        target, &info, file, source, &opts.template,
+    );
 
     // En mode --move : rename(2) atomique sur même FS, sinon copy + delete (cross-FS).
     // La source est consommée par move_to_destination dans tous les cas de succès.
-    let copy_result = if do_move {
+    let copy_result = if opts.do_move {
         organizer::move_to_destination(file, &dest)
     } else {
         organizer::copy_to_destination(file, &dest)

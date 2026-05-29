@@ -11,7 +11,12 @@ pub struct Config {
     pub workers: Option<usize>,
     pub r#move: Option<bool>,
     pub cache_enabled: Option<bool>,         // défaut true
-    pub api_cache_ttl_days: Option<u32>,     // défaut 30 — non utilisé pour l'instant
+    pub api_cache_ttl_days: Option<u32>,     // défaut 30
+    pub naming_template: Option<String>,     // défaut organizer::DEFAULT_TEMPLATE
+    pub unsorted_ttl_days: Option<i64>,      // défaut 30 — re-tente _unsorted après ce délai
+    pub quarantine_enabled: Option<bool>,    // défaut true — route les matchs faibles vers _review/
+    pub dedup_enabled: Option<bool>,         // défaut true — détecte les doublons par hash de contenu
+    pub fix_tags: Option<bool>,              // défaut false — réécrit les tags canoniques sur match sûr
 }
 
 impl Config {
@@ -92,5 +97,25 @@ api_cache_ttl_days = 7
         let c = Config::from_str(toml).unwrap();
         assert_eq!(c.cache_enabled, Some(false));
         assert_eq!(c.api_cache_ttl_days, Some(7));
+    }
+
+    #[test]
+    fn test_parse_organization_options() {
+        let toml = r#"
+naming_template = "{artist}/{year} - {album}/{track} - {title}"
+unsorted_ttl_days = 7
+quarantine_enabled = false
+dedup_enabled = true
+fix_tags = true
+"#;
+        let c = Config::from_str(toml).unwrap();
+        assert_eq!(
+            c.naming_template,
+            Some("{artist}/{year} - {album}/{track} - {title}".into())
+        );
+        assert_eq!(c.unsorted_ttl_days, Some(7));
+        assert_eq!(c.quarantine_enabled, Some(false));
+        assert_eq!(c.dedup_enabled, Some(true));
+        assert_eq!(c.fix_tags, Some(true));
     }
 }

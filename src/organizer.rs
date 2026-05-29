@@ -38,6 +38,73 @@ fn resolve_existing_folder(target: &Path, proposed: &str) -> String {
     proposed.to_string()
 }
 
+/// Template de nommage par défaut. Placeholders : {artist} {album} {title}
+/// {year} {track} {genre}. Les segments sont séparés par `/` (dossiers) ;
+/// un segment dont un token est vide voit ses ` - ` superflus collapsés.
+pub const DEFAULT_TEMPLATE: &str = "{artist} - {year} - {album}/{track} - {title}";
+
+/// Substitue un token par sa valeur dans `info`. {track} est zero-paddé sur 2.
+fn token_value(token: &str, info: &TrackInfo) -> String {
+    match token {
+        "artist" => info.artist.clone().unwrap_or_default(),
+        "album" => info.album.clone().unwrap_or_default(),
+        "title" => info.title.clone().unwrap_or_default(),
+        "genre" => info.genre.clone().unwrap_or_default(),
+        "year" => info.year.map(|y| y.to_string()).unwrap_or_default(),
+        "track" => info.track_number.map(|n| format!("{:02}", n)).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Remplace tous les `{token}` d'un segment par leurs valeurs.
+fn substitute_segment(segment: &str, info: &TrackInfo) -> String {
+    let mut out = String::new();
+    let mut rest = segment;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        if let Some(end) = rest[start..].find('}') {
+            let token = &rest[start + 1..start + end];
+            out.push_str(&token_value(token, info));
+            rest = &rest[start + end + 1..];
+        } else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Collapse les séparateurs ` - ` superflus issus d'un token vide
+/// (ex. « Artist -  - Album » → « Artist - Album »).
+fn collapse_separators(s: &str) -> String {
+    s.split(" - ")
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - ")
+}
+
+/// Rend le chemin relatif (sous la racine cible) à partir d'un template.
+/// Chaque segment séparé par `/` devient un composant de chemin sanitizé.
+/// L'extension est ajoutée au dernier segment (le nom de fichier).
+pub fn render_relative_path(template: &str, info: &TrackInfo, ext: &str) -> PathBuf {
+    let segments: Vec<&str> = template.split('/').collect();
+    let last = segments.len().saturating_sub(1);
+    let mut path = PathBuf::new();
+    for (i, segment) in segments.iter().enumerate() {
+        let substituted = substitute_segment(segment, info);
+        let collapsed = collapse_separators(&substituted);
+        let mut component = sanitize_filename(&collapsed);
+        if i == last && !ext.is_empty() {
+            component = format!("{}.{}", component, ext);
+        }
+        path.push(component);
+    }
+    path
+}
+
 /// Construit le chemin de destination d'un fichier audio
 /// `source_root` permet de reconstruire la structure relative dans `_unsorted/`
 pub fn build_destination_path(
@@ -45,6 +112,17 @@ pub fn build_destination_path(
     info: &TrackInfo,
     original_path: &Path,
     source_root: &Path,
+) -> PathBuf {
+    build_destination_path_with_template(target, info, original_path, source_root, DEFAULT_TEMPLATE)
+}
+
+/// Variante paramétrée par un template de nommage (cf. config.toml).
+pub fn build_destination_path_with_template(
+    target: &Path,
+    info: &TrackInfo,
+    original_path: &Path,
+    source_root: &Path,
+    template: &str,
 ) -> PathBuf {
     // Récupère l'extension du fichier original
     let ext = original_path
@@ -66,27 +144,18 @@ pub fn build_destination_path(
         return target.join("_unsorted").join(relative);
     }
 
-    // Les champs sont garantis Some ici
-    let artist = sanitize_filename(info.artist.as_deref().unwrap_or("Unknown"));
-    let album = sanitize_filename(info.album.as_deref().unwrap_or("Unknown"));
-    let title = sanitize_filename(info.title.as_deref().unwrap_or("Unknown"));
+    // Rend le chemin relatif via le template, puis réutilise un dossier
+    // existant si seule la casse du premier composant (dossier) diffère.
+    let relative = render_relative_path(template, info, ext);
+    let mut components = relative.components();
+    if let Some(first) = components.next() {
+        let first_str = first.as_os_str().to_string_lossy();
+        let resolved_first = resolve_existing_folder(target, &first_str);
+        let rest: PathBuf = components.collect();
+        return target.join(resolved_first).join(rest);
+    }
 
-    // Dossier : [artist] - [year] - [album]  ou  [artist] - [album]
-    let folder_name = match info.year {
-        Some(year) => format!("{} - {} - {}", artist, year, album),
-        None => format!("{} - {}", artist, album),
-    };
-
-    // Réutilise un dossier existant si seule la casse diffère
-    let folder_name = resolve_existing_folder(target, &folder_name);
-
-    // Nom de fichier : [NN] - [title].[ext]  ou  [title].[ext]
-    let file_name = match info.track_number {
-        Some(n) => format!("{:02} - {}.{}", n, title, ext),
-        None => format!("{}.{}", title, ext),
-    };
-
-    target.join(folder_name).join(file_name)
+    target.join(relative)
 }
 
 /// Copie via reflink (CoW, instantané sur btrfs/xfs/zfs).
@@ -333,6 +402,89 @@ mod tests {
         assert_eq!(
             result,
             target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
+        );
+    }
+
+    #[test]
+    fn test_render_template_full() {
+        let info = TrackInfo {
+            artist: Some("Boards of Canada".into()),
+            album: Some("Geogaddi".into()),
+            title: Some("Music Is Math".into()),
+            year: Some(2002),
+            track_number: Some(2),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "flac");
+        assert_eq!(
+            rel,
+            Path::new("Boards of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
+        );
+    }
+
+    #[test]
+    fn test_render_template_no_year_collapses_separator() {
+        let info = TrackInfo {
+            artist: Some("BoC".into()),
+            album: Some("Geogaddi".into()),
+            title: Some("Track".into()),
+            year: None,
+            track_number: None,
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        assert_eq!(rel, Path::new("BoC - Geogaddi/Track.mp3"));
+    }
+
+    #[test]
+    fn test_render_template_no_track_collapses_separator() {
+        let info = TrackInfo {
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+            title: Some("Title".into()),
+            year: Some(2020),
+            track_number: None,
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "ogg");
+        assert_eq!(rel, Path::new("Artist - 2020 - Album/Title.ogg"));
+    }
+
+    #[test]
+    fn test_render_template_custom_nested_artist_folder() {
+        let info = TrackInfo {
+            artist: Some("Aphex Twin".into()),
+            album: Some("Drukqs".into()),
+            title: Some("Avril 14th".into()),
+            year: Some(2001),
+            track_number: Some(8),
+            ..Default::default()
+        };
+        let rel = render_relative_path(
+            "{artist}/{year} - {album}/{track} - {title}",
+            &info,
+            "flac",
+        );
+        assert_eq!(
+            rel,
+            Path::new("Aphex Twin/2001 - Drukqs/08 - Avril 14th.flac")
+        );
+    }
+
+    #[test]
+    fn test_render_template_sanitizes_each_component() {
+        let info = TrackInfo {
+            artist: Some("AC/DC".into()),
+            album: Some("Back: In Black".into()),
+            title: Some("T*N*T".into()),
+            year: Some(1980),
+            track_number: Some(1),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        assert_eq!(
+            rel,
+            Path::new("AC_DC - 1980 - Back_ In Black/01 - T_N_T.mp3")
         );
     }
 
