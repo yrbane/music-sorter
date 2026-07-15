@@ -133,16 +133,9 @@ pub fn build_destination_path_with_template(
 
     // Pas assez d'info → dossier _unsorted en conservant la structure relative
     if !info.has_minimum_for_organization() {
-        let relative = original_path
-            .strip_prefix(source_root)
-            .unwrap_or_else(|_| {
-                Path::new(
-                    original_path
-                        .file_name()
-                        .unwrap_or_else(|| std::ffi::OsStr::new("unknown")),
-                )
-            });
-        return target.join("_unsorted").join(relative);
+        return target
+            .join("_unsorted")
+            .join(relative_to_source(original_path, source_root));
     }
 
     // Rend le chemin relatif via le template, puis réutilise un dossier
@@ -157,6 +150,27 @@ pub fn build_destination_path_with_template(
     }
 
     target.join(relative)
+}
+
+/// Chemin relatif d'un fichier par rapport à la racine source ; à défaut (fichier
+/// hors de cette racine), son simple nom. Sert à reconstruire la structure sous
+/// `_unsorted/` et `_errors/`.
+fn relative_to_source<'a>(original_path: &'a Path, source_root: &Path) -> &'a Path {
+    original_path.strip_prefix(source_root).unwrap_or_else(|_| {
+        Path::new(
+            original_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("unknown")),
+        )
+    })
+}
+
+/// Destination de quarantaine pour un fichier en **erreur de contenu** (illisible,
+/// tags corrompus) : sous `target/_errors/`, structure relative préservée.
+pub fn error_destination(target: &Path, original_path: &Path, source_root: &Path) -> PathBuf {
+    target
+        .join("_errors")
+        .join(relative_to_source(original_path, source_root))
 }
 
 /// Rebase une destination organisée sous `target/_review/` (zone de quarantaine
@@ -413,6 +427,27 @@ mod tests {
             result,
             target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
         );
+    }
+
+    #[test]
+    fn test_error_destination_preserves_relative_structure() {
+        let dest = error_destination(
+            Path::new("/music"),
+            Path::new("/src/badfolder/corrupt.mp3"),
+            Path::new("/src"),
+        );
+        assert_eq!(dest, Path::new("/music/_errors/badfolder/corrupt.mp3"));
+    }
+
+    #[test]
+    fn test_error_destination_falls_back_to_filename() {
+        // Fichier hors de la racine source → simple nom sous _errors/.
+        let dest = error_destination(
+            Path::new("/music"),
+            Path::new("/other/x.mp3"),
+            Path::new("/src"),
+        );
+        assert_eq!(dest, Path::new("/music/_errors/x.mp3"));
     }
 
     #[test]

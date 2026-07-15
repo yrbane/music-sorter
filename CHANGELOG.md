@@ -5,6 +5,22 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.5.0 — 2026-07-15 · « Quarantaine des erreurs »
+
+### Ajouté
+- **Dossier `_errors/`** : les fichiers en erreur (contenu illisible, ou nom de
+  destination invalide sur le système de fichiers) sont déplacés en quarantaine
+  sous `target/_errors/` (structure d'origine préservée) au lieu de rester
+  indéfiniment dans la source. La raison est enregistrée (via `--list-unsorted`).
+- Quarantaine **auto-classifiante** : si le déplacement vers `_errors/` échoue
+  aussi (cible en lecture seule, disque plein → erreur environnementale), le
+  fichier reste en source pour re-tentative au prochain run. Les erreurs
+  d'enrichissement (JSON/DB, transitoires) restent également en source.
+
+### Corrigé
+- Les erreurs d'I/O au rangement enregistrent désormais leur raison (auparavant
+  note vide, non diagnosticable).
+
 ## 0.4.0 — 2026-07-15 · « Dédup acoustique »
 
 ### Ajouté

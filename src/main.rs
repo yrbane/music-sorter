@@ -360,6 +360,8 @@ fn process_file(
     let (info, confidence) = match enrich_result {
         Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
+            // Erreur d'enrichissement (JSON API malformé, DB…) : transitoire →
+            // on laisse le fichier en source pour re-tentative au prochain run.
             bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
                 let _ = cache.record_processed_note(&source_str, mt, size, None, "error", Some(&e.to_string()));
@@ -372,9 +374,11 @@ fn process_file(
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic interne (UTF-8 ?)".into());
-            bar.println(format!("  {} {} — PANIC : {}", "✗".red().bold(), filename, reason));
+            bar.println(format!("  {} {} — PANIC : {} → _errors/", "✗".red().bold(), filename, reason));
+            let quarantined = quarantine_error(file, target, source, opts.do_move);
+            let dest_str = quarantined.as_ref().map(|d| d.to_string_lossy().into_owned());
             if let Some(mt) = mtime {
-                let _ = cache.record_processed_note(&source_str, mt, size, None, "error", Some(&reason));
+                let _ = cache.record_processed_note(&source_str, mt, size, dest_str.as_deref(), "error", Some(&reason));
             }
             return ProcessResult::Error { path: file.to_path_buf(), reason };
         }
@@ -471,9 +475,17 @@ fn process_file(
             ProcessResult::Organized { from: file.to_path_buf(), to: dest }
         }
         Err(e) => {
-            bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
+            // Erreur d'I/O au rangement (nom de destination invalide sur le FS,
+            // chemin trop long…). On tente de mettre le fichier en quarantaine
+            // sous _errors/ (nom d'origine, toujours valide). Si ce déplacement
+            // échoue AUSSI (cible read-only, disque plein → vraiment
+            // environnemental), on laisse en source pour re-tentative.
+            let quarantined = quarantine_error(file, target, source, opts.do_move);
+            let dest_str = quarantined.as_ref().map(|d| d.to_string_lossy().into_owned());
+            let suffix = if quarantined.is_some() { " → _errors/" } else { "" };
+            bar.println(format!("  {} {} — {}{}", "✗".red().bold(), filename, e, suffix));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed(&source_str, mt, size, None, "error");
+                let _ = cache.record_processed_note(&source_str, mt, size, dest_str.as_deref(), "error", Some(&e.to_string()));
             }
             ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() }
         }
@@ -484,6 +496,24 @@ fn process_file(
 /// - organized/conflict : toujours skip (le fichier est rangé).
 /// - unsorted : skip pendant `ttl_days`, ou toujours en mode `resume`.
 /// - autre (error, ...) : jamais skip (on retente).
+/// Déplace un fichier en erreur **de contenu** (illisible, tags corrompus) vers
+/// `target/_errors/`, uniquement en mode `--move` (en copie la source n'est pas
+/// consommée). Renvoie la destination si le déplacement a réussi. Les erreurs
+/// d'I/O (copie/déplacement) ne passent pas par ici : le fichier reste en source
+/// pour être re-tenté au prochain run.
+fn quarantine_error(
+    file: &std::path::Path,
+    target: &std::path::Path,
+    source: &std::path::Path,
+    do_move: bool,
+) -> Option<std::path::PathBuf> {
+    if !do_move {
+        return None;
+    }
+    let dest = organizer::error_destination(target, file, source);
+    organizer::move_to_destination(file, &dest).ok().map(|_| dest)
+}
+
 fn should_skip_cached(
     status: &str,
     age_secs: i64,
@@ -521,7 +551,7 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     if duplicates > 0 { println!("  {} {} doublons de contenu ignorés", "⧉".cyan().bold(), duplicates); }
     if acoustic_dups > 0 { println!("  {} {} doublons acoustiques → corbeille (meilleure qualité conservée)", "⧉".cyan().bold(), acoustic_dups); }
     if interrupted > 0 { println!("  {} {} non traités (interruption)", "⏹".yellow().bold(), interrupted); }
-    if errors > 0    { println!("  {} {} erreurs", "✗".red().bold(), errors); }
+    if errors > 0    { println!("  {} {} erreurs → _errors/ (ou source si cible non inscriptible)", "✗".red().bold(), errors); }
     println!(
         "  {} en {:.1}s ({:.1} fichiers/s)",
         "⏱".dimmed(),
