@@ -260,6 +260,46 @@ impl Cache {
         Ok(())
     }
 
+    /// Clé de registre album : artiste et album en minuscules, séparés par U+0001
+    /// (caractère qui n'apparaît pas dans un nom, évite les collisions).
+    fn album_key(artist: &str, album: &str) -> String {
+        format!("{}\u{1}{}", artist.to_lowercase(), album.to_lowercase())
+    }
+
+    /// Renvoie (nom d'album canonique, année canonique) pour ce couple artiste/album.
+    pub fn lookup_album(&self, artist: &str, album: &str) -> Result<Option<(String, Option<u32>)>> {
+        let key = Self::album_key(artist, album);
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT album, year FROM albums WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        if let Some(row) = rows.next()? {
+            let album: String = row.get(0)?;
+            let year: Option<i64> = row.get(1)?;
+            Ok(Some((album, year.map(|y| y as u32))))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Enregistre/consolide un album : nom en première-casse, année la plus ancienne.
+    /// Le nom d'album n'est jamais écrasé ; l'année ne recule que vers une valeur
+    /// plus ancienne (ou s'adopte si elle était absente).
+    pub fn upsert_album(&self, artist: &str, album: &str, year: Option<u32>) -> Result<()> {
+        let key = Self::album_key(artist, album);
+        let y: Option<i64> = year.map(|y| y as i64);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO albums (key, album, year) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+               year = CASE
+                 WHEN excluded.year IS NOT NULL
+                      AND (albums.year IS NULL OR excluded.year < albums.year)
+                 THEN excluded.year ELSE albums.year END",
+            rusqlite::params![key, album, y],
+        )?;
+        Ok(())
+    }
+
     pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
@@ -330,6 +370,11 @@ impl Cache {
                 content_hash TEXT PRIMARY KEY,
                 dest_path    TEXT NOT NULL,
                 recorded_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS albums (
+                key   TEXT PRIMARY KEY,   -- lower(artist)  lower(album)
+                album TEXT NOT NULL,      -- casse canonique = première vue
+                year  INTEGER             -- année canonique = la plus ancienne
             );
             CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_files(status);
         "#)?;
@@ -448,6 +493,47 @@ mod tests {
         let (status, dest, _last_seen) = r.unwrap();
         assert_eq!(status, "organized");
         assert_eq!(dest, Some("/dest".into()));
+    }
+
+    #[test]
+    fn test_album_upsert_and_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.upsert_album("Boards of Canada", "Geogaddi", Some(2002)).unwrap();
+        let got = cache.lookup_album("boards of canada", "geogaddi").unwrap();
+        assert_eq!(got, Some(("Geogaddi".to_string(), Some(2002))));
+    }
+
+    #[test]
+    fn test_album_keeps_earliest_year() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.upsert_album("BoC", "Geogaddi", Some(2004)).unwrap();
+        cache.upsert_album("BoC", "Geogaddi", Some(2002)).unwrap();
+        cache.upsert_album("BoC", "Geogaddi", Some(2013)).unwrap();
+        let (_, year) = cache.lookup_album("boc", "geogaddi").unwrap().unwrap();
+        assert_eq!(year, Some(2002), "l'année la plus ancienne doit gagner");
+    }
+
+    #[test]
+    fn test_album_name_first_seen_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.upsert_album("BoC", "Geogaddi", Some(2002)).unwrap();
+        cache.upsert_album("BoC", "geogaddi", Some(2002)).unwrap();
+        let (album, _) = cache.lookup_album("boc", "GEOGADDI").unwrap().unwrap();
+        assert_eq!(album, "Geogaddi", "la première casse d'album doit gagner");
+    }
+
+    #[test]
+    fn test_album_year_filled_when_initially_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        // D'abord sans année, puis avec : l'année doit être adoptée.
+        cache.upsert_album("BoC", "Geogaddi", None).unwrap();
+        cache.upsert_album("BoC", "Geogaddi", Some(2002)).unwrap();
+        let (_, year) = cache.lookup_album("boc", "geogaddi").unwrap().unwrap();
+        assert_eq!(year, Some(2002));
     }
 
     #[test]

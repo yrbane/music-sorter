@@ -237,6 +237,16 @@ impl Enricher {
                 .unwrap_or_else(|_| artist.clone());
             info.artist = Some(canonical);
         }
+        // Registre d'album : unifie la casse du nom d'album (première vue) et
+        // retient l'année la plus ancienne connue (artiste déjà canonicalisé).
+        if let (Some(artist), Some(album)) = (info.artist.as_ref(), info.album.as_ref()) {
+            if let Ok((canon_album, canon_year)) =
+                crate::album_group::canonicalize(&self.cache, artist, album, info.year)
+            {
+                info.album = Some(canon_album);
+                info.year = canon_year;
+            }
+        }
         (info, confidence)
     }
 }
@@ -309,5 +319,40 @@ mod tests {
             crate::models::Confidence::Medium,
         );
         assert_eq!(i2.artist, Some("Boards Of Canada".into()));
+    }
+
+    /// finalize() doit aussi unifier la casse d'album et retenir l'année la plus
+    /// ancienne pour un même album (artiste déjà canonicalisé).
+    #[test]
+    fn test_finalize_unifies_album_casing_and_year() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+        let enricher =
+            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+
+        let (i1, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("Boards of Canada".into()),
+                album: Some("Geogaddi".into()),
+                year: Some(2002),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(i1.year, Some(2002));
+
+        // Même album, casse différente + année plus récente → casse unifiée,
+        // année la plus ancienne (2002) conservée.
+        let (i2, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("boards of canada".into()),
+                album: Some("geogaddi".into()),
+                year: Some(2013),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(i2.album, Some("Geogaddi".into()));
+        assert_eq!(i2.year, Some(2002));
     }
 }

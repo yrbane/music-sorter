@@ -5,6 +5,23 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.2.0 — 2026-07-15 · « Regroupement d'albums »
+
+### Ajouté
+- **Registre d'album** : pour un même couple artiste/album, unifie la casse du
+  nom d'album (première casse rencontrée) et retient l'**année de sortie la plus
+  ancienne** (une réédition ne l'emporte plus sur l'original). Un fichier sans
+  année hérite de celle enregistrée pour l'album. Appliqué sur **tous** les
+  chemins d'enrichissement via le point de sortie unique `finalize`, convergent
+  entre workers (`--workers N`).
+- Nouvelle table cache `albums` et fonctions `upsert_album` / `lookup_album`.
+
+### Note
+- L'unification de la **casse** d'album prend effet dès le passage courant.
+  L'**année la plus ancienne** n'est connue qu'une fois tous les fichiers vus :
+  le regroupement des dossiers déjà existants se fait via une passe de
+  consolidation dédiée.
+
 ## 0.1.3 — 2026-07-15 · « Casse d'artiste unifiée »
 
 ### Corrigé
