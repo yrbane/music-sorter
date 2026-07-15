@@ -271,7 +271,10 @@ fn process_file(
                     if dest_pb.exists() {
                         // Copie source déjà organisée (ancien run en mode copie) :
                         // en --move on la met à la corbeille pour vider la source.
-                        if should_trash_redundant_source(&status, opts.do_move, true) {
+                        // Garde-fou retri sur place : ne jamais trasher un fichier
+                        // qui EST déjà sa propre destination.
+                        let is_self = file.canonicalize().ok() == dest_pb.canonicalize().ok();
+                        if !is_self && should_trash_redundant_source(&status, opts.do_move, true) {
                             let _ = trash::delete(file);
                         }
                         return ProcessResult::CachedSkip {

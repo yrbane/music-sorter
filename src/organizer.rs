@@ -218,8 +218,23 @@ fn copy_with_reflink(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
+/// Vrai si les deux chemins désignent le même fichier réel (après résolution).
+/// Protège les retris « sur place » (source déjà à sa destination).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(pa), Ok(pb)) => pa == pb,
+        _ => false,
+    }
+}
+
 /// Copie un fichier vers sa destination en gérant les conflits par bitrate
 pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResult> {
+    // Source déjà à sa destination (retri sur place) : ne rien faire.
+    if is_same_file(source, destination) {
+        return Ok(CopyResult::Skipped {
+            existing_bitrate: crate::tags::get_bitrate(destination).unwrap_or(0),
+        });
+    }
     // Crée les dossiers parents si nécessaire
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
@@ -269,6 +284,13 @@ fn move_or_copy_delete(source: &Path, destination: &Path) -> Result<()> {
 /// Déplace un fichier vers sa destination en gérant les conflits par bitrate.
 /// La source est TOUJOURS consommée en cas de succès (sémantique --move).
 pub fn move_to_destination(source: &Path, destination: &Path) -> Result<CopyResult> {
+    // Source déjà à sa destination (retri sur place) : ne rien faire, surtout ne
+    // JAMAIS supprimer le fichier.
+    if is_same_file(source, destination) {
+        return Ok(CopyResult::Skipped {
+            existing_bitrate: crate::tags::get_bitrate(destination).unwrap_or(0),
+        });
+    }
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -451,6 +473,27 @@ mod tests {
             result,
             target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
         );
+    }
+
+    #[test]
+    fn test_move_to_destination_same_path_is_noop() {
+        // Retri sur place : source == destination ne doit JAMAIS supprimer le fichier.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("track.mp3");
+        std::fs::write(&f, b"audio-bytes").unwrap();
+        let result = move_to_destination(&f, &f).unwrap();
+        assert!(f.exists(), "le fichier a été supprimé lors d'un move sur soi-même !");
+        assert!(matches!(result, CopyResult::Skipped { .. }));
+    }
+
+    #[test]
+    fn test_copy_to_destination_same_path_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("track.mp3");
+        std::fs::write(&f, b"audio-bytes").unwrap();
+        let result = copy_to_destination(&f, &f).unwrap();
+        assert!(f.exists());
+        assert!(matches!(result, CopyResult::Skipped { .. }));
     }
 
     #[test]

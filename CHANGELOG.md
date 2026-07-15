@@ -5,6 +5,17 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.5.3 — 2026-07-15 · « Retri sur place sécurisé »
+
+### Corrigé
+- **Critique (perte de données)** : lors d'un retri où source et destination sont
+  le même dossier, un fichier se re-rangeant à son emplacement actuel
+  (source == destination) était **supprimé** par `move_to_destination`
+  (suppression de la source après un « conflit » de bitrate égal). Garde
+  `is_same_file` ajoutée dans move/copy **et** dans la logique de corbeille : un
+  fichier déjà à sa place n'est jamais déplacé ni supprimé. Rend le retri sur
+  place (`--source X --target X --move`) sûr.
+
 ## 0.5.2 — 2026-07-15 · « Chemins de destination robustes »
 
 ### Corrigé
