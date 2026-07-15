@@ -11,6 +11,22 @@ pub enum CopyResult {
 }
 
 /// Remplace les caractères invalides dans un nom de fichier par `_`
+/// Longueur max d'une composante de chemin, en octets. La plupart des systèmes de
+/// fichiers plafonnent à 255 ; on garde une marge pour l'extension et l'UTF-8.
+const MAX_COMPONENT_BYTES: usize = 200;
+
+/// Tronque une composante à `max_bytes` sans couper un caractère UTF-8.
+fn truncate_component(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].trim_end().to_string()
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
@@ -96,9 +112,17 @@ pub fn render_relative_path(template: &str, info: &TrackInfo, ext: &str) -> Path
     for (i, segment) in segments.iter().enumerate() {
         let substituted = substitute_segment(segment, info);
         let collapsed = collapse_separators(&substituted);
-        let mut component = sanitize_filename(&collapsed);
+        // Tronque à la limite du système de fichiers (évite « File name too long »).
+        let mut component =
+            truncate_component(&sanitize_filename(&collapsed), MAX_COMPONENT_BYTES);
         if i == last && !ext.is_empty() {
+            // Un nom de fichier vide donnerait un chemin = dossier → « Is a directory ».
+            if component.is_empty() {
+                component = "track".to_string();
+            }
             component = format!("{}.{}", component, ext);
+        } else if component.is_empty() {
+            component = "unknown".to_string();
         }
         path.push(component);
     }
@@ -427,6 +451,56 @@ mod tests {
             result,
             target.join("Boards Of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
         );
+    }
+
+    #[test]
+    fn test_truncate_component_ascii() {
+        let long = "a".repeat(300);
+        let t = truncate_component(&long, 200);
+        assert_eq!(t.len(), 200);
+    }
+
+    #[test]
+    fn test_truncate_component_utf8_boundary() {
+        let s = "é".repeat(150); // 300 octets (é = 2 octets)
+        let t = truncate_component(&s, 201);
+        assert!(t.len() <= 201, "len={}", t.len());
+        assert!(t.chars().all(|c| c == 'é'), "caractère coupé");
+    }
+
+    #[test]
+    fn test_truncate_component_short_unchanged() {
+        assert_eq!(truncate_component("short", 200), "short");
+    }
+
+    #[test]
+    fn test_render_truncates_overlong_filename() {
+        // Un titre démesuré ne doit pas produire un nom de fichier > limite FS.
+        let info = TrackInfo {
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+            year: Some(2020),
+            track_number: Some(1),
+            title: Some("T".repeat(400)),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        let fname = rel.file_name().unwrap().to_str().unwrap();
+        assert!(fname.len() <= MAX_COMPONENT_BYTES + 5, "nom trop long : {}", fname.len());
+        assert!(fname.ends_with(".mp3"));
+    }
+
+    #[test]
+    fn test_render_empty_last_segment_uses_fallback_name() {
+        // Si track+title manquent (segment vide), on évite un dest = dossier (EISDIR).
+        let info = TrackInfo {
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+            year: Some(2020),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        assert_eq!(rel.file_name().unwrap().to_str().unwrap(), "track.mp3");
     }
 
     #[test]

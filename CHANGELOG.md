@@ -5,6 +5,16 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.5.2 — 2026-07-15 · « Chemins de destination robustes »
+
+### Corrigé
+- **« File name too long » (os error 36)** : chaque composante du chemin de
+  destination est tronquée à 200 octets (sans couper l'UTF-8), évitant l'échec
+  sur les titres/albums démesurés — cause d'une grande partie des erreurs.
+- **« Is a directory » (os error 21)** : un segment de nom de fichier vide
+  (track + titre manquants) produisait une destination = dossier existant ; on
+  utilise désormais un nom de repli (« track »).
+
 ## 0.5.1 — 2026-07-15 · « Nettoyage des copies redondantes »
 
 ### Corrigé
