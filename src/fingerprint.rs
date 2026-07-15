@@ -82,6 +82,26 @@ pub fn lookup_acoustid(
     Ok(recording_id)
 }
 
+/// Lookup AcoustID avec cache : renvoie le MBID d'enregistrement, en mémorisant
+/// le résultat (y compris l'absence de match) pour éviter de refaire l'appel HTTP.
+pub fn lookup_acoustid_cached(
+    cache: &crate::cache::Cache,
+    api_key: &str,
+    fingerprint: &FingerprintResult,
+    ttl_secs: i64,
+) -> Result<Option<String>> {
+    let key = crate::cache_keys::api_key(&format!(
+        "{}:{}",
+        fingerprint.duration, fingerprint.fingerprint
+    ));
+    if let Some(cached) = cache.lookup_api("acoustid", &key, ttl_secs)? {
+        return Ok(if cached.is_empty() { None } else { Some(cached) });
+    }
+    let recording_id = lookup_acoustid(api_key, fingerprint)?;
+    cache.record_api("acoustid", &key, recording_id.as_deref().unwrap_or(""))?;
+    Ok(recording_id)
+}
+
 fn parse_acoustid_response(resp: &serde_json::Value) -> Option<String> {
     resp["results"]
         .as_array()?

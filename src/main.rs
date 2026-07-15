@@ -35,6 +35,7 @@ struct RunOptions {
     resume: bool,
     retry_unsorted: bool,
     dedup: bool,
+    audio_dedup: bool,
     quarantine: bool,
     fix_tags: bool,
     template: String,
@@ -130,6 +131,8 @@ fn main() -> Result<()> {
         resume: args.resume,
         retry_unsorted: args.retry_unsorted,
         dedup: config.dedup_enabled.unwrap_or(true),
+        // Dédup acoustique : nécessite fpcalc ; désactivable via config audio_dedup.
+        audio_dedup: config.audio_dedup.unwrap_or(true) && fingerprint::is_fpcalc_available(),
         quarantine: config.quarantine_enabled.unwrap_or(true),
         fix_tags: args.fix_tags || config.fix_tags.unwrap_or(false),
         template: config
@@ -303,6 +306,52 @@ fn process_file(
         None
     };
 
+    // Dédup acoustique : deux fichiers renvoyant le même enregistrement AcoustID
+    // (MBID) sont le même morceau, quelle que soit la qualité. On conserve le
+    // meilleur bitrate, l'autre part à la corbeille système.
+    let acoustic: Option<(String, u32)> = if opts.audio_dedup && !opts.dry_run {
+        match enricher.resolve_recording_id(file) {
+            Some(recording_id) => {
+                let cur_q = tags::get_bitrate(file).unwrap_or(0);
+                if let Ok(Some((existing, existing_q))) = cache.lookup_acoustic(&recording_id) {
+                    let existing_path = std::path::PathBuf::from(&existing);
+                    let same_file =
+                        existing_path.canonicalize().ok() == file.canonicalize().ok();
+                    if existing_path.exists() && !same_file {
+                        if cur_q > existing_q {
+                            // Courant meilleur : l'ancien exemplaire va à la corbeille.
+                            let _ = trash::delete(&existing_path);
+                            bar.println(format!(
+                                "  {} {} — remplace un doublon acoustique ({}→{}kbps)",
+                                "⧉".cyan().bold(), filename, existing_q, cur_q
+                            ));
+                        } else {
+                            // Ancien au moins aussi bon : le courant est le perdant.
+                            if opts.do_move {
+                                let _ = trash::delete(file);
+                            }
+                            bar.println(format!(
+                                "  {} {} — doublon acoustique (corbeille, {}≤{}kbps)",
+                                "⧉".cyan().bold(), filename, cur_q, existing_q
+                            ));
+                            if let Some(mt) = mtime {
+                                let _ = cache.record_processed(&source_str, mt, size, Some(&existing), "organized");
+                            }
+                            return ProcessResult::AcousticDuplicate {
+                                from: file.to_path_buf(),
+                                of: existing_path,
+                            };
+                        }
+                    }
+                }
+                Some((recording_id, cur_q))
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
     // Catch des panics éventuels (bugs UTF-8 dans lofty, etc.) pour que le run continue
     let enrich_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         enricher.enrich(file)
@@ -392,6 +441,9 @@ fn process_file(
                 if let Some(h) = &content_hash {
                     let _ = cache.record_content(h, &dest.to_string_lossy());
                 }
+                if let Some((fp_key, q)) = &acoustic {
+                    let _ = cache.upsert_acoustic(fp_key, &dest.to_string_lossy(), *q);
+                }
                 ProcessResult::Organized { from: file.to_path_buf(), to: dest }
             }
         }
@@ -405,6 +457,9 @@ fn process_file(
             }
             if let Some(h) = &content_hash {
                 let _ = cache.record_content(h, &dest.to_string_lossy());
+            }
+            if let Some((fp_key, q)) = &acoustic {
+                let _ = cache.upsert_acoustic(fp_key, &dest.to_string_lossy(), *q);
             }
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }
@@ -450,6 +505,7 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     let conflicts = results.iter().filter(|r| matches!(r, ProcessResult::ConflictResolved { .. })).count();
     let unsorted = results.iter().filter(|r| matches!(r, ProcessResult::Unsorted { .. })).count();
     let duplicates = results.iter().filter(|r| matches!(r, ProcessResult::Duplicate { .. })).count();
+    let acoustic_dups = results.iter().filter(|r| matches!(r, ProcessResult::AcousticDuplicate { .. })).count();
     let interrupted = results.iter().filter(|r| matches!(r, ProcessResult::Interrupted { .. })).count();
     let errors = results.iter().filter(|r| matches!(r, ProcessResult::Error { .. })).count();
 
@@ -463,6 +519,7 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
     if conflicts > 0 { println!("  {} {} conflits résolus (meilleur bitrate conservé)", "↑".cyan().bold(), conflicts); }
     if unsorted > 0  { println!("  {} {} fichiers non identifiés → _unsorted/", "⚠".yellow().bold(), unsorted); }
     if duplicates > 0 { println!("  {} {} doublons de contenu ignorés", "⧉".cyan().bold(), duplicates); }
+    if acoustic_dups > 0 { println!("  {} {} doublons acoustiques → corbeille (meilleure qualité conservée)", "⧉".cyan().bold(), acoustic_dups); }
     if interrupted > 0 { println!("  {} {} non traités (interruption)", "⏹".yellow().bold(), interrupted); }
     if errors > 0    { println!("  {} {} erreurs", "✗".red().bold(), errors); }
     println!(

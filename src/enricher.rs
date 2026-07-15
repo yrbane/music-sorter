@@ -218,6 +218,19 @@ impl Enricher {
         Ok(self.finalize(info, confidence))
     }
 
+    /// Résout le MBID d'enregistrement d'un fichier via son empreinte (AcoustID).
+    /// Sert de clé d'identité pour la dédup acoustique (« même enregistrement »).
+    /// Renvoie None si fpcalc ou la clé AcoustID manquent, ou sans match.
+    pub fn resolve_recording_id(&self, path: &Path) -> Option<String> {
+        let api_key = self.acoustid_api_key.as_ref()?;
+        if !self.fpcalc_available {
+            return None;
+        }
+        let fp = fingerprint::generate_or_cached(&self.cache, path).ok()?;
+        fingerprint::lookup_acoustid_cached(&self.cache, api_key, &fp, self.api_cache_ttl_secs)
+            .ok()?
+    }
+
     /// Tente d'identifier un fichier via son empreinte acoustique (AcoustID →
     /// MusicBrainz). Met à jour `info` et `release_id` sur un match. No-op si
     /// fpcalc ou la clé AcoustID manquent. Renvoie true si un enregistrement a
@@ -238,7 +251,9 @@ impl Enricher {
         let Ok(fp) = fingerprint::generate_or_cached(&self.cache, path) else {
             return false;
         };
-        let Ok(Some(recording_id)) = fingerprint::lookup_acoustid(api_key, &fp) else {
+        let Ok(Some(recording_id)) =
+            fingerprint::lookup_acoustid_cached(&self.cache, api_key, &fp, self.api_cache_ttl_secs)
+        else {
             return false;
         };
         match self.musicbrainz.lookup_by_recording_id_with_cache(

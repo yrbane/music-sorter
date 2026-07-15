@@ -16,6 +16,7 @@ pub struct Config {
     pub unsorted_ttl_days: Option<i64>,      // défaut 30 — re-tente _unsorted après ce délai
     pub quarantine_enabled: Option<bool>,    // défaut true — route les matchs faibles vers _review/
     pub dedup_enabled: Option<bool>,         // défaut true — détecte les doublons par hash de contenu
+    pub audio_dedup: Option<bool>,           // défaut true — dédup acoustique (empreinte+durée → corbeille)
     pub fix_tags: Option<bool>,              // défaut false — réécrit les tags canoniques sur match sûr
 }
 

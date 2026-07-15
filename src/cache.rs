@@ -300,6 +300,31 @@ impl Cache {
         Ok(())
     }
 
+    /// Renvoie (chemin conservé, qualité) pour cette empreinte acoustique.
+    pub fn lookup_acoustic(&self, fp_key: &str) -> Result<Option<(String, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT dest_path, quality FROM acoustic_index WHERE fp_key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![fp_key])?;
+        if let Some(row) = rows.next()? {
+            let dest: String = row.get(0)?;
+            let quality: i64 = row.get(1)?;
+            Ok(Some((dest, quality as u32)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Enregistre/remplace l'exemplaire conservé pour cette empreinte acoustique.
+    pub fn upsert_acoustic(&self, fp_key: &str, dest_path: &str, quality: u32) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO acoustic_index (fp_key, dest_path, quality) VALUES (?1, ?2, ?3)",
+            rusqlite::params![fp_key, dest_path, quality as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
@@ -370,6 +395,11 @@ impl Cache {
                 content_hash TEXT PRIMARY KEY,
                 dest_path    TEXT NOT NULL,
                 recorded_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS acoustic_index (
+                fp_key    TEXT PRIMARY KEY,
+                dest_path TEXT NOT NULL,
+                quality   INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS albums (
                 key   TEXT PRIMARY KEY,   -- lower(artist)  lower(album)
@@ -493,6 +523,29 @@ mod tests {
         let (status, dest, _last_seen) = r.unwrap();
         assert_eq!(status, "organized");
         assert_eq!(dest, Some("/dest".into()));
+    }
+
+    #[test]
+    fn test_acoustic_upsert_and_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.upsert_acoustic("fpkey1", "/music/A/track.flac", 900).unwrap();
+        let got = cache.lookup_acoustic("fpkey1").unwrap();
+        assert_eq!(got, Some(("/music/A/track.flac".to_string(), 900)));
+        assert_eq!(cache.lookup_acoustic("absent").unwrap(), None);
+    }
+
+    #[test]
+    fn test_acoustic_upsert_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache.upsert_acoustic("k", "/music/lowbr.mp3", 128).unwrap();
+        // Un meilleur exemplaire remplace l'entrée.
+        cache.upsert_acoustic("k", "/music/hifi.flac", 1000).unwrap();
+        assert_eq!(
+            cache.lookup_acoustic("k").unwrap(),
+            Some(("/music/hifi.flac".to_string(), 1000))
+        );
     }
 
     #[test]

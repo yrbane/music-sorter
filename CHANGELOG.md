@@ -5,6 +5,23 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.4.0 — 2026-07-15 · « Dédup acoustique »
+
+### Ajouté
+- **Dédup acoustique** : deux fichiers reconnus comme le même enregistrement par
+  AcoustID (MBID d'enregistrement) sont dédupliqués — on conserve le meilleur
+  bitrate, l'autre part à la **corbeille système** (FreeDesktop, récupérable).
+  Détecte les doublons que le hash de contenu manque (même morceau ré-encodé).
+  Activée par défaut (config `audio_dedup` pour désactiver) ; nécessite fpcalc +
+  clé AcoustID.
+- Table cache `acoustic_index` ; lookup AcoustID mémorisé (pas de double appel).
+
+### Note de conception
+- L'identité repose sur le **MBID d'enregistrement AcoustID**, pas sur l'égalité
+  exacte de l'empreinte Chromaprint (qui ne survit pas au ré-encodage — vérifié).
+  Les fichiers non reconnus par AcoustID ne sont **pas** dédupliqués : aucun faux
+  positif, aucune suppression incertaine.
+
 ## 0.3.0 — 2026-07-15 · « Moins de non-identifiés »
 
 ### Ajouté

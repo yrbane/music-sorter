@@ -1,6 +1,6 @@
 [package]
 name = "music-sorter"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -21,6 +21,7 @@ hex = "0.4"
 reflink-copy = "0.1"
 indicatif = "0.17"
 ctrlc = "3.5.2"
+trash = "5"
 
 [dev-dependencies]
 tempfile = "3"
