@@ -24,7 +24,11 @@ impl MusicBrainzClient {
     /// Crée un nouveau client MusicBrainz avec le limiteur de débit fourni
     pub fn new(rate_limiter: Arc<RateLimiter>) -> Result<Self> {
         let client = Client::builder()
-            .user_agent("music-sorter/0.1.0 (https://github.com/music-sorter)")
+            .user_agent(concat!(
+                "music-sorter/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/yrbane/music-sorter)"
+            ))
             .timeout(Duration::from_secs(10))
             .gzip(true)
             .pool_max_idle_per_host(4)
@@ -90,11 +94,12 @@ impl MusicBrainzClient {
         let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
         let encoded = url_encode(&query);
         let url = format!("{}/recording/?query={}&fmt=json&limit=5", BASE_URL, encoded);
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-        if !response.status().is_success() {
-            return Ok(None);
-        }
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(&url)
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
         let body = response.text()?;
         let key = crate::cache_keys::api_key(&format!(
             "{}|{}|{}",
@@ -123,11 +128,12 @@ impl MusicBrainzClient {
             "{}/recording/{}?inc=releases+artists+genres+release-groups&fmt=json",
             BASE_URL, recording_id
         );
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-        if !response.status().is_success() {
-            return Ok(None);
-        }
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(&url)
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
         let body = response.text()?;
         let key = crate::cache_keys::api_key(&format!(
             "{}|{}",

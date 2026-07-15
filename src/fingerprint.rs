@@ -67,8 +67,14 @@ pub fn lookup_acoustid(
         api_key, fingerprint.duration, fingerprint.fingerprint
     );
 
-    let resp: serde_json::Value = reqwest::blocking::get(&url)
-        .context("Erreur réseau AcoustID")?
+    let client = reqwest::blocking::Client::new();
+    // Retry sur erreurs transitoires (429/5xx/réseau) ; AcoustID n'a pas de rate limiter dédié.
+    let response = match crate::retry::get_with_retry(None, || client.get(&url)) {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    let resp: serde_json::Value = response
         .json()
         .context("Erreur parsing réponse AcoustID")?;
 

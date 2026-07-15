@@ -19,7 +19,7 @@ impl CoverArtClient {
     /// Crée un nouveau client Cover Art Archive avec le limiteur de débit fourni
     pub fn new(rate_limiter: Arc<RateLimiter>) -> Result<Self> {
         let client = Client::builder()
-            .user_agent("music-sorter/0.1.0")
+            .user_agent(concat!("music-sorter/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(10))
             .gzip(true)
             .pool_max_idle_per_host(4)
@@ -33,12 +33,12 @@ impl CoverArtClient {
     pub fn fetch_cover(&self, release_id: &str) -> Result<Option<Vec<u8>>> {
         let url = format!("{}/release/{}", BASE_URL, release_id);
 
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(&url)
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
 
         let json: serde_json::Value = response.json()?;
 
@@ -49,12 +49,12 @@ impl CoverArtClient {
         };
 
         // Télécharge l'image depuis l'URL extraite
-        self.rate_limiter.wait();
-        let img_response = self.client.get(&image_url).send()?;
-
-        if !img_response.status().is_success() {
-            return Ok(None);
-        }
+        let img_response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(&image_url)
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
 
         let bytes = img_response.bytes()?;
         Ok(Some(bytes.to_vec()))

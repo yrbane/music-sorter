@@ -43,7 +43,7 @@ impl DiscogsClient {
     /// Crée un nouveau client Discogs avec le token et le limiteur de débit fournis
     pub fn new(token: String, rate_limiter: Arc<RateLimiter>) -> Result<Self> {
         let client = Client::builder()
-            .user_agent("music-sorter/0.1.0")
+            .user_agent(concat!("music-sorter/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(10))
             .gzip(true)
             .pool_max_idle_per_host(4)
@@ -93,18 +93,15 @@ impl DiscogsClient {
             return Ok(Some(hit));
         }
 
-        let artist_enc = url_encode(artist);
-        let album_enc = url_encode(album);
-        let url = format!(
-            "{}/database/search?artist={}&release_title={}&type=release&token={}&per_page=5",
-            BASE_URL, artist_enc, album_enc, self.token
-        );
+        let url = build_search_url(artist, album);
 
-        self.rate_limiter.wait();
-        let response = self.client.get(&url).send()?;
-        if !response.status().is_success() {
-            return Ok(None);
-        }
+        // Token transmis en en-tête (jamais dans l'URL), avec retry sur erreurs transitoires.
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(&url).header("Authorization", self.auth_header())
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
         let body = response.text()?;
         let key = crate::cache_keys::api_key(&format!("{}|{}", artist, album));
         cache.record_api("discogs_search", &key, &body)?;
@@ -123,11 +120,12 @@ impl DiscogsClient {
             return Ok(Some(hit));
         }
 
-        self.rate_limiter.wait();
-        let response = self.client.get(resource_url).send()?;
-        if !response.status().is_success() {
-            return Ok(None);
-        }
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(resource_url).header("Authorization", self.auth_header())
+        }) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
         let body = response.text()?;
         let key = crate::cache_keys::api_key(resource_url);
         cache.record_api("discogs_release", &key, &body)?;
@@ -137,18 +135,32 @@ impl DiscogsClient {
 
     /// Télécharge une image depuis son URL avec authentification Discogs
     pub fn fetch_image(&self, image_url: &str) -> Result<Vec<u8>> {
-        self.rate_limiter.wait();
-        let response = self.client
-            .get(image_url)
-            .header(
-                "Authorization",
-                format!("Discogs token={}", self.token),
-            )
-            .send()?;
+        let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
+            self.client.get(image_url).header("Authorization", self.auth_header())
+        }) {
+            Some(r) => r,
+            None => anyhow::bail!("Échec du téléchargement de l'image Discogs : {}", image_url),
+        };
 
         let bytes = response.bytes()?;
         Ok(bytes.to_vec())
     }
+
+    /// En-tête d'authentification Discogs. Le token ne transite ainsi jamais par l'URL.
+    fn auth_header(&self) -> String {
+        format!("Discogs token={}", self.token)
+    }
+}
+
+/// Construit l'URL de recherche Discogs. Le token n'y figure **jamais** : il est
+/// transmis via l'en-tête `Authorization` pour éviter toute fuite dans les logs.
+fn build_search_url(artist: &str, album: &str) -> String {
+    format!(
+        "{}/database/search?artist={}&release_title={}&type=release&per_page=5",
+        BASE_URL,
+        url_encode(artist),
+        url_encode(album),
+    )
 }
 
 /// Encode les caractères spéciaux pour les paramètres d'URL
@@ -287,6 +299,17 @@ mod tests {
 
         let result = DiscogsClient::get_release_details_cached(&cache, url, DISCOGS_DEFAULT_CACHE_TTL_SECS).unwrap();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_build_search_url_excludes_token() {
+        let url = build_search_url("Boards of Canada", "Geogaddi");
+        assert!(url.contains("artist=Boards+of+Canada"), "url = {url}");
+        assert!(url.contains("release_title=Geogaddi"), "url = {url}");
+        assert!(url.contains("type=release"), "url = {url}");
+        assert!(url.contains("per_page=5"), "url = {url}");
+        // Le token ne doit JAMAIS apparaître dans l'URL (surface de fuite en logs).
+        assert!(!url.contains("token"), "le token ne doit pas être dans l'URL : {url}");
     }
 
     #[test]
