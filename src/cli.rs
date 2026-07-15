@@ -71,6 +71,11 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
+    /// Force la re-tentative des fichiers marqués _unsorted dans le cache
+    /// (utile après une amélioration de l'identification)
+    #[arg(long, default_value_t = false)]
+    pub retry_unsorted: bool,
+
     /// Réécrit les tags canoniques (MusicBrainz/Discogs) dans les fichiers sur match sûr
     #[arg(long, default_value_t = false)]
     pub fix_tags: bool,
@@ -94,6 +99,7 @@ pub struct ResolvedArgs {
     pub list_unsorted: bool,
     pub dry_run: bool,
     pub resume: bool,
+    pub retry_unsorted: bool,
     pub fix_tags: bool,
     pub rollback: bool,
     pub apply: bool,
@@ -132,6 +138,7 @@ impl Args {
             list_unsorted: self.list_unsorted,
             dry_run: self.dry_run,
             resume: self.resume,
+            retry_unsorted: self.retry_unsorted,
             fix_tags: self.fix_tags,
             rollback: self.rollback,
             apply: self.apply,
@@ -202,6 +209,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            retry_unsorted: false,
             fix_tags: false,
             rollback: false,
             apply: false,
@@ -232,6 +240,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            retry_unsorted: false,
             fix_tags: false,
             rollback: false,
             apply: false,
@@ -262,6 +271,7 @@ mod tests {
             list_unsorted: false,
             dry_run: false,
             resume: false,
+            retry_unsorted: false,
             fix_tags: false,
             rollback: false,
             apply: false,

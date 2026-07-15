@@ -33,6 +33,7 @@ struct RunOptions {
     do_move: bool,
     dry_run: bool,
     resume: bool,
+    retry_unsorted: bool,
     dedup: bool,
     quarantine: bool,
     fix_tags: bool,
@@ -127,6 +128,7 @@ fn main() -> Result<()> {
         do_move: args.do_move,
         dry_run: args.dry_run,
         resume: args.resume,
+        retry_unsorted: args.retry_unsorted,
         dedup: config.dedup_enabled.unwrap_or(true),
         quarantine: config.quarantine_enabled.unwrap_or(true),
         fix_tags: args.fix_tags || config.fix_tags.unwrap_or(false),
@@ -260,7 +262,7 @@ fn process_file(
                 .unwrap_or(0);
             let age_secs = now - last_seen;
 
-            if should_skip_cached(&status, age_secs, opts.unsorted_ttl_days, opts.resume) {
+            if should_skip_cached(&status, age_secs, opts.unsorted_ttl_days, opts.resume, opts.retry_unsorted) {
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {
@@ -427,10 +429,17 @@ fn process_file(
 /// - organized/conflict : toujours skip (le fichier est rangé).
 /// - unsorted : skip pendant `ttl_days`, ou toujours en mode `resume`.
 /// - autre (error, ...) : jamais skip (on retente).
-fn should_skip_cached(status: &str, age_secs: i64, ttl_days: i64, resume: bool) -> bool {
+fn should_skip_cached(
+    status: &str,
+    age_secs: i64,
+    ttl_days: i64,
+    resume: bool,
+    retry_unsorted: bool,
+) -> bool {
     match status {
         "organized" | "conflict" => true,
-        "unsorted" => resume || age_secs < ttl_days * 86400,
+        // --retry-unsorted force la re-tentative (prime sur resume et le TTL).
+        "unsorted" => !retry_unsorted && (resume || age_secs < ttl_days * 86400),
         _ => false,
     }
 }
@@ -470,31 +479,38 @@ mod tests {
 
     #[test]
     fn test_skip_organized_always() {
-        assert!(should_skip_cached("organized", 999_999_999, 30, false));
-        assert!(should_skip_cached("conflict", 999_999_999, 30, false));
+        assert!(should_skip_cached("organized", 999_999_999, 30, false, false));
+        assert!(should_skip_cached("conflict", 999_999_999, 30, false, false));
     }
 
     #[test]
     fn test_skip_unsorted_within_ttl() {
         // 10 jours < 30 jours → skip
-        assert!(should_skip_cached("unsorted", 10 * 86400, 30, false));
+        assert!(should_skip_cached("unsorted", 10 * 86400, 30, false, false));
     }
 
     #[test]
     fn test_no_skip_unsorted_past_ttl() {
         // 40 jours > 30 jours → on retente
-        assert!(!should_skip_cached("unsorted", 40 * 86400, 30, false));
+        assert!(!should_skip_cached("unsorted", 40 * 86400, 30, false, false));
     }
 
     #[test]
     fn test_resume_forces_skip_unsorted_past_ttl() {
         // En mode resume, on skip même au-delà du TTL
-        assert!(should_skip_cached("unsorted", 40 * 86400, 30, true));
+        assert!(should_skip_cached("unsorted", 40 * 86400, 30, true, false));
+    }
+
+    #[test]
+    fn test_retry_unsorted_forces_reprocess() {
+        // --retry-unsorted force la re-tentative, même en resume et dans le TTL.
+        assert!(!should_skip_cached("unsorted", 10 * 86400, 30, true, true));
+        assert!(!should_skip_cached("unsorted", 5 * 86400, 30, false, true));
     }
 
     #[test]
     fn test_no_skip_error() {
-        assert!(!should_skip_cached("error", 0, 30, false));
-        assert!(!should_skip_cached("error", 0, 30, true));
+        assert!(!should_skip_cached("error", 0, 30, false, false));
+        assert!(!should_skip_cached("error", 0, 30, true, false));
     }
 }

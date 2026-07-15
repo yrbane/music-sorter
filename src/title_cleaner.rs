@@ -21,6 +21,9 @@ pub fn clean_for_search(title: &str) -> String {
 fn strip_one_pass(s: &str) -> String {
     let s = s.trim_end_matches([' ', '\t', '-', '_', '.', ',']).trim();
 
+    if let Some(stripped) = strip_trailing_domain(s) {
+        return stripped.to_string();
+    }
     if let Some(stripped) = strip_trailing_provider_marker(s) {
         return stripped.to_string();
     }
@@ -31,6 +34,27 @@ fn strip_one_pass(s: &str) -> String {
         return stripped.to_string();
     }
     s.to_string()
+}
+
+/// Strip un token final ressemblant à un domaine / URL parasite
+/// (« music-team.net », « www.site.com »). Préserve les acronymes (« R.E.M. »)
+/// et ne supprime jamais l'intégralité de la chaîne.
+fn strip_trailing_domain(s: &str) -> Option<&str> {
+    const TLDS: &[&str] = &[
+        ".net", ".com", ".org", ".fr", ".io", ".me", ".to", ".ru", ".co", ".tv",
+        ".fm", ".biz", ".info", ".uk", ".de", ".es", ".it", ".nl",
+    ];
+    let trimmed = s.trim_end();
+    let last = trimmed.rsplit(char::is_whitespace).next()?;
+    let lower = last.to_lowercase();
+    let looks_like_domain = lower.starts_with("www.")
+        || (last.contains('.') && TLDS.iter().any(|tld| lower.ends_with(tld)));
+    if !looks_like_domain {
+        return None;
+    }
+    let rest = trimmed[..trimmed.len() - last.len()].trim_end();
+    // Ne pas manger toute la chaîne (ex. un titre qui EST un domaine).
+    (!rest.is_empty()).then_some(rest)
 }
 
 /// Strip un suffixe de type `_<digits>` ou `_soundcloud` ou `_youtube` ou `_bandcamp`.
@@ -204,6 +228,22 @@ mod tests {
         assert_eq!(
             clean_for_search("Track Name (Original Mix)_123456_soundcloud"),
             "Track Name"
+        );
+    }
+
+    #[test]
+    fn test_strip_trailing_domain() {
+        assert_eq!(clean_for_search("Arabe music-team.net"), "Arabe");
+        assert_eq!(clean_for_search("Some Track www.example.com"), "Some Track");
+        assert_eq!(clean_for_search("Nom - dl.mp3blog.io"), "Nom");
+    }
+
+    #[test]
+    fn test_domain_strip_preserves_non_domain_dots() {
+        // « R.E.M. » n'est pas un domaine (pas de TLD final) : ne pas toucher.
+        assert_eq!(
+            clean_for_search("R.E.M. Losing My Religion"),
+            "R.E.M. Losing My Religion"
         );
     }
 }

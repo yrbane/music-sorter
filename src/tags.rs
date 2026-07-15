@@ -155,9 +155,18 @@ pub fn parse_artist_title_from_filename(path: &Path) -> (Option<String>, Option<
         return (None, None);
     }
 
-    if let Some(idx) = cleaned.find(" - ") {
+    // Séparateurs artiste/titre courants : tiret, en-dash « – », em-dash « — »
+    // (fréquents dans les fichiers téléchargés). On retient l'occurrence la plus
+    // à gauche. Les longueurs d'octets diffèrent (les dashes font 3 octets UTF-8).
+    const SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
+    let split = SEPARATORS
+        .iter()
+        .filter_map(|sep| cleaned.find(sep).map(|idx| (idx, sep.len())))
+        .min_by_key(|(idx, _)| *idx);
+
+    if let Some((idx, len)) = split {
         let a = cleaned[..idx].trim().to_string();
-        let t = cleaned[idx + 3..].trim().to_string();
+        let t = cleaned[idx + len..].trim().to_string();
         if !a.is_empty() && !t.is_empty() {
             return (Some(a), Some(t));
         }
@@ -271,6 +280,21 @@ mod tests {
         let (a, t) = parse_artist_title_from_filename(Path::new("Slope - Komputa Groove.mp3"));
         assert_eq!(a, Some("Slope".into()));
         assert_eq!(t, Some("Komputa Groove".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_endash_separator() {
+        // Beaucoup de fichiers téléchargés utilisent l'en-dash « – » (U+2013).
+        let (a, t) = parse_artist_title_from_filename(Path::new("Alok – Arabe.mp3"));
+        assert_eq!(a, Some("Alok".into()));
+        assert_eq!(t, Some("Arabe".into()));
+    }
+
+    #[test]
+    fn test_parse_filename_emdash_separator() {
+        let (a, t) = parse_artist_title_from_filename(Path::new("Modeselektor — Evil Twin.mp3"));
+        assert_eq!(a, Some("Modeselektor".into()));
+        assert_eq!(t, Some("Evil Twin".into()));
     }
 
     #[test]

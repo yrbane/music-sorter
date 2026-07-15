@@ -130,25 +130,12 @@ impl Enricher {
 
         let existing_album = info.album.clone();
 
-        // Étape 2 : si les tags sont insuffisants, tenter le fingerprinting AcoustID
-        if !info.has_minimum_for_search() && self.fpcalc_available {
-            if let Some(ref api_key) = self.acoustid_api_key {
-                if let Ok(fp) = fingerprint::generate_or_cached(&self.cache, path) {
-                    if let Ok(Some(recording_id)) = fingerprint::lookup_acoustid(api_key, &fp) {
-                        if let Ok(Some((mb_info, rid))) =
-                            self.musicbrainz.lookup_by_recording_id_with_cache(
-                                &self.cache,
-                                &recording_id,
-                                existing_album.as_deref(),
-                                self.api_cache_ttl_secs,
-                            )
-                        {
-                            override_from_db(&mut info, &mb_info);
-                            release_id = rid;
-                        }
-                    }
-                }
-            }
+        // Étape 2 : tags insuffisants pour une recherche texte → tenter d'abord
+        // l'empreinte acoustique AcoustID.
+        let mut acoustid_tried = false;
+        if !info.has_minimum_for_search() {
+            acoustid_tried = true;
+            self.try_acoustid(path, &mut info, existing_album.as_deref(), &mut release_id);
         }
 
         // Étape 3 : recherche MusicBrainz par texte si artiste+titre disponibles et pas encore de release_id
@@ -169,6 +156,13 @@ impl Enricher {
                 override_from_db(&mut info, &mb_info);
                 release_id = Some(rid);
             }
+        }
+
+        // Étape 3bis : repli acoustique. Quand la recherche texte n'a rien donné
+        // et que le fichier resterait non identifié, AcoustID reconnaît souvent
+        // les fichiers aux noms/tags pourris là où le texte échoue.
+        if release_id.is_none() && !acoustid_tried && !info.has_minimum_for_organization() {
+            self.try_acoustid(path, &mut info, existing_album.as_deref(), &mut release_id);
         }
 
         // Étape 4 : pochette via Cover Art Archive
@@ -222,6 +216,46 @@ impl Enricher {
 
         let confidence = compute_confidence(had_embedded_org, release_id.is_some());
         Ok(self.finalize(info, confidence))
+    }
+
+    /// Tente d'identifier un fichier via son empreinte acoustique (AcoustID →
+    /// MusicBrainz). Met à jour `info` et `release_id` sur un match. No-op si
+    /// fpcalc ou la clé AcoustID manquent. Renvoie true si un enregistrement a
+    /// été trouvé.
+    fn try_acoustid(
+        &self,
+        path: &Path,
+        info: &mut TrackInfo,
+        existing_album: Option<&str>,
+        release_id: &mut Option<String>,
+    ) -> bool {
+        let Some(api_key) = self.acoustid_api_key.as_ref() else {
+            return false;
+        };
+        if !self.fpcalc_available {
+            return false;
+        }
+        let Ok(fp) = fingerprint::generate_or_cached(&self.cache, path) else {
+            return false;
+        };
+        let Ok(Some(recording_id)) = fingerprint::lookup_acoustid(api_key, &fp) else {
+            return false;
+        };
+        match self.musicbrainz.lookup_by_recording_id_with_cache(
+            &self.cache,
+            &recording_id,
+            existing_album,
+            self.api_cache_ttl_secs,
+        ) {
+            Ok(Some((mb_info, rid))) => {
+                override_from_db(info, &mb_info);
+                if rid.is_some() {
+                    *release_id = rid;
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Point de sortie unique d'`enrich` : applique le registre de casse à

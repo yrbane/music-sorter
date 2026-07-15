@@ -5,6 +5,23 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.3.0 — 2026-07-15 · « Moins de non-identifiés »
+
+### Ajouté
+- **Repli AcoustID** : quand la recherche texte MusicBrainz échoue et que le
+  fichier resterait non identifié, l'empreinte acoustique est désormais tentée
+  (auparavant AcoustID n'était sollicité que lorsque artiste+titre manquaient).
+  Sollicite la base acoustique précisément sur les cas durs (noms/tags pourris).
+- **`--retry-unsorted`** : force la re-tentative des fichiers déjà marqués
+  `_unsorted` dans le cache, pour profiter des améliorations d'identification
+  sans re-scanner toute la source.
+
+### Amélioré
+- Parseur de noms de fichiers : reconnaît les séparateurs en-dash « – » et
+  em-dash « — » en plus du tiret ASCII (fréquents dans les téléchargements).
+- Nettoyage de titre avant recherche : suppression des suffixes de domaine
+  parasites (« music-team.net », « www.… »).
+
 ## 0.2.0 — 2026-07-15 · « Regroupement d'albums »
 
 ### Ajouté
