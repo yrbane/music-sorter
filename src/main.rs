@@ -39,6 +39,7 @@ struct RunOptions {
     quarantine: bool,
     fix_tags: bool,
     template: String,
+    compilation_template: String,
     unsorted_ttl_days: i64,
     /// Passé à true par le handler Ctrl-C : les workers restants s'arrêtent net.
     interrupted: Arc<AtomicBool>,
@@ -139,6 +140,10 @@ fn main() -> Result<()> {
             .naming_template
             .clone()
             .unwrap_or_else(|| organizer::DEFAULT_TEMPLATE.to_string()),
+        compilation_template: config
+            .compilation_template
+            .clone()
+            .unwrap_or_else(|| organizer::COMPILATION_TEMPLATE.to_string()),
         unsorted_ttl_days: config.unsorted_ttl_days.unwrap_or(30),
         interrupted,
     });
@@ -392,8 +397,15 @@ fn process_file(
         }
     };
 
+    // Les compilations utilisent un template dédié (dossier Various Artists,
+    // artiste de piste dans le nom de fichier).
+    let template = if info.is_compilation {
+        &opts.compilation_template
+    } else {
+        &opts.template
+    };
     let mut dest = organizer::build_destination_path_with_template(
-        target, &info, file, source, &opts.template,
+        target, &info, file, source, template,
     );
 
     // Quarantaine : un match de faible confiance (heuristique seule) part en _review/
@@ -456,6 +468,9 @@ fn process_file(
                 if let Some((fp_key, q)) = &acoustic {
                     let _ = cache.upsert_acoustic(fp_key, &dest.to_string_lossy(), *q);
                 }
+                if let (Some(parent), Some(cover)) = (dest.parent(), &info.cover_art) {
+                    coverart::write_album_cover(parent, cover);
+                }
                 ProcessResult::Organized { from: file.to_path_buf(), to: dest }
             }
         }
@@ -472,6 +487,9 @@ fn process_file(
             }
             if let Some((fp_key, q)) = &acoustic {
                 let _ = cache.upsert_acoustic(fp_key, &dest.to_string_lossy(), *q);
+            }
+            if let (Some(parent), Some(cover)) = (dest.parent(), &info.cover_art) {
+                coverart::write_album_cover(parent, cover);
             }
             ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
         }

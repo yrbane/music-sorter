@@ -121,6 +121,14 @@ impl Enricher {
             }
         }
 
+        // Pochette locale : si pas de pochette embarquée, réutiliser une image du
+        // dossier (folder.jpg/cover.jpg…). Priorité embarqué > local > API.
+        if info.cover_art.is_none() {
+            if let Some(parent) = path.parent() {
+                info.cover_art = crate::coverart::find_local_cover(parent);
+            }
+        }
+
         if info.has_full_metadata() {
             // Métadonnées complètes sans appel API : confiance basée sur les tags embarqués.
             return Ok(self.finalize(info, compute_confidence(had_embedded_org, false)));
@@ -296,6 +304,11 @@ impl Enricher {
                 info.year = canon_year;
             }
         }
+        // Compilation : l'album-artist canonique est « Various Artists » (regroupe
+        // toutes les compilations dans un même dossier).
+        if info.is_compilation {
+            info.album_artist = Some(crate::models::VARIOUS_ARTISTS.to_string());
+        }
         (info, confidence)
     }
 }
@@ -368,6 +381,25 @@ mod tests {
             crate::models::Confidence::Medium,
         );
         assert_eq!(i2.artist, Some("Boards Of Canada".into()));
+    }
+
+    /// finalize() force l'album-artist des compilations à « Various Artists ».
+    #[test]
+    fn test_finalize_sets_various_artists_for_compilation() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+        let enricher =
+            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        let (info, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("Some DJ".into()),
+                album: Some("Comp".into()),
+                is_compilation: true,
+                ..Default::default()
+            },
+            crate::models::Confidence::High,
+        );
+        assert_eq!(info.album_artist.as_deref(), Some("Various Artists"));
     }
 
     /// finalize() doit aussi unifier la casse d'album et retenir l'année la plus

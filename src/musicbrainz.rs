@@ -247,6 +247,19 @@ fn extract_from_release(release: &serde_json::Value, title: Option<String>, arti
         .as_u64()
         .map(|n| n as u32);
 
+    // Artiste de release (album-artist) et détection de compilation.
+    let album_artist = release["artist-credit"][0]["name"]
+        .as_str()
+        .map(|s| s.to_string());
+    let secondary_comp = release["release-group"]["secondary-types"]
+        .as_array()
+        .map(|arr| arr.iter().any(|t| t.as_str() == Some("Compilation")))
+        .unwrap_or(false);
+    let is_va = album_artist
+        .as_deref()
+        .map(crate::models::is_various_artists)
+        .unwrap_or(false);
+
     TrackInfo {
         artist,
         album,
@@ -256,6 +269,8 @@ fn extract_from_release(release: &serde_json::Value, title: Option<String>, arti
         total_tracks,
         genre,
         cover_art: None,
+        album_artist,
+        is_compilation: secondary_comp || is_va,
     }
 }
 

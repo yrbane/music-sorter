@@ -5,6 +5,22 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.6.0 — 2026-07-15 · « Pochettes locales & compilations »
+
+### Ajouté
+- **Pochettes locales** : si le fichier n'a pas de pochette embarquée, réutilise
+  une image du dossier source (`cover`/`front`/`folder`/`albumart`, sinon la plus
+  grande). Priorité embarqué > local > API. La pochette est aussi écrite en
+  `cover.jpg` dans le dossier d'album de destination.
+- **Compilations & albums multi-artistes** : champ **album-artist** (lu des tags
+  `TPE2`/`ALBUMARTIST` ou de l'artiste de release MusicBrainz). Le dossier utilise
+  l'album-artist ; une compilation (flag iTunes, secondary-type MusicBrainz, ou
+  album-artist « Various ») est regroupée sous **« Various Artists »**, l'artiste
+  de piste figurant dans le nom de fichier (template dédié, configurable via
+  `compilation_template`).
+- Token **`{album_artist}`** (repli sur `{artist}`) ; le dossier par défaut passe à
+  `{album_artist} - {year} - {album}` (identique pour un album normal).
+
 ## 0.5.3 — 2026-07-15 · « Retri sur place sécurisé »
 
 ### Corrigé

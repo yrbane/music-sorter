@@ -9,6 +9,58 @@ use crate::rate_limiter::RateLimiter;
 /// URL de base de l'API Cover Art Archive
 const BASE_URL: &str = "https://coverartarchive.org";
 
+/// Cherche une image de pochette dans un dossier : priorité aux noms explicites
+/// (cover/front/folder/albumart), sinon la plus grande image. Renvoie ses octets.
+pub fn find_local_cover(dir: &std::path::Path) -> Option<Vec<u8>> {
+    const EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
+    const PREFERRED: &[&str] = &["cover", "front", "folder", "albumart"];
+
+    let mut images: Vec<(std::path::PathBuf, u64)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            if EXTS.contains(&ext.as_str()) {
+                Some((path, e.metadata().map(|m| m.len()).unwrap_or(0)))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if images.is_empty() {
+        return None;
+    }
+
+    // Priorité aux noms explicites (cover/front/folder/albumart).
+    let named = images.iter().find(|(p, _)| {
+        p.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| {
+                let low = s.to_lowercase();
+                PREFERRED.iter().any(|k| low.contains(k))
+            })
+            .unwrap_or(false)
+    });
+    let chosen = match named {
+        Some((p, _)) => p.clone(),
+        None => {
+            // Sinon la plus grande image (souvent la pochette pleine résolution).
+            images.sort_by_key(|(_, sz)| *sz);
+            images.last()?.0.clone()
+        }
+    };
+    std::fs::read(&chosen).ok()
+}
+
+/// Écrit une pochette `cover.jpg` dans le dossier d'album si absente.
+pub fn write_album_cover(album_dir: &std::path::Path, bytes: &[u8]) {
+    let cover = album_dir.join("cover.jpg");
+    if !cover.exists() {
+        let _ = std::fs::write(&cover, bytes);
+    }
+}
+
 /// Client HTTP pour récupérer les pochettes d'albums via Cover Art Archive
 pub struct CoverArtClient {
     client: Client,
@@ -96,6 +148,29 @@ fn extract_front_image_url(resp: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_find_local_cover_prefers_named() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("random.png"), b"random-data").unwrap();
+        std::fs::write(dir.path().join("cover.jpg"), b"the-cover").unwrap();
+        assert_eq!(find_local_cover(dir.path()).unwrap(), b"the-cover");
+    }
+
+    #[test]
+    fn test_find_local_cover_largest_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"tiny").unwrap();
+        std::fs::write(dir.path().join("b.jpg"), vec![7u8; 500]).unwrap();
+        assert_eq!(find_local_cover(dir.path()).unwrap().len(), 500);
+    }
+
+    #[test]
+    fn test_find_local_cover_none_without_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("song.mp3"), b"audio").unwrap();
+        assert!(find_local_cover(dir.path()).is_none());
+    }
 
     #[test]
     fn test_extract_front_image_url() {

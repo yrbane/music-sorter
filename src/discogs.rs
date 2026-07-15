@@ -203,6 +203,10 @@ fn parse_search_response(resp: &serde_json::Value) -> Option<(TrackInfo, Option<
         .as_str()
         .map(|u| u.to_string());
 
+    let is_comp = artist
+        .as_deref()
+        .map(crate::models::is_various_artists)
+        .unwrap_or(false);
     let info = TrackInfo {
         artist,
         album,
@@ -212,6 +216,8 @@ fn parse_search_response(resp: &serde_json::Value) -> Option<(TrackInfo, Option<
         track_number: None,
         total_tracks: None,
         cover_art: None,
+        album_artist: None,
+        is_compilation: is_comp,
     };
 
     Some((info, resource_url))

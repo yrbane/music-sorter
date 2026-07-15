@@ -1,3 +1,14 @@
+/// Nom canonique d'artiste d'album pour une compilation.
+pub const VARIOUS_ARTISTS: &str = "Various Artists";
+
+/// Détecte un artiste d'album « compilation » (Various Artists sous ses formes).
+pub fn is_various_artists(name: &str) -> bool {
+    matches!(
+        name.trim().to_lowercase().as_str(),
+        "various" | "various artists" | "va" | "v.a." | "v/a" | "compilation" | "compilations"
+    )
+}
+
 /// Informations sur une piste audio
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TrackInfo {
@@ -9,6 +20,10 @@ pub struct TrackInfo {
     pub total_tracks: Option<u32>,
     pub genre: Option<String>,
     pub cover_art: Option<Vec<u8>>,
+    /// Artiste de l'album (pour regrouper compilations / albums multi-artistes).
+    pub album_artist: Option<String>,
+    /// Vrai si l'album est une compilation (Various Artists).
+    pub is_compilation: bool,
 }
 
 /// Niveau de confiance d'un enrichissement, pour router les matchs faibles.
@@ -71,6 +86,10 @@ impl TrackInfo {
         if self.cover_art.is_none() {
             self.cover_art.clone_from(&other.cover_art);
         }
+        if self.album_artist.is_none() {
+            self.album_artist.clone_from(&other.album_artist);
+        }
+        self.is_compilation = self.is_compilation || other.is_compilation;
     }
 
     /// Vérifie si on a assez d'info pour chercher dans les APIs

@@ -57,12 +57,22 @@ fn resolve_existing_folder(target: &Path, proposed: &str) -> String {
 /// Template de nommage par défaut. Placeholders : {artist} {album} {title}
 /// {year} {track} {genre}. Les segments sont séparés par `/` (dossiers) ;
 /// un segment dont un token est vide voit ses ` - ` superflus collapsés.
-pub const DEFAULT_TEMPLATE: &str = "{artist} - {year} - {album}/{track} - {title}";
+pub const DEFAULT_TEMPLATE: &str = "{album_artist} - {year} - {album}/{track} - {title}";
+
+/// Template appliqué aux compilations : le dossier utilise l'album-artist
+/// (« Various Artists ») et le nom de fichier inclut l'artiste de piste.
+pub const COMPILATION_TEMPLATE: &str = "{album_artist} - {year} - {album}/{track} - {artist} - {title}";
 
 /// Substitue un token par sa valeur dans `info`. {track} est zero-paddé sur 2.
 fn token_value(token: &str, info: &TrackInfo) -> String {
     match token {
         "artist" => info.artist.clone().unwrap_or_default(),
+        // Repli sur l'artiste de piste si l'album-artist est absent.
+        "album_artist" => info
+            .album_artist
+            .clone()
+            .or_else(|| info.artist.clone())
+            .unwrap_or_default(),
         "album" => info.album.clone().unwrap_or_default(),
         "title" => info.title.clone().unwrap_or_default(),
         "genre" => info.genre.clone().unwrap_or_default(),
@@ -531,6 +541,54 @@ mod tests {
         let fname = rel.file_name().unwrap().to_str().unwrap();
         assert!(fname.len() <= MAX_COMPONENT_BYTES + 5, "nom trop long : {}", fname.len());
         assert!(fname.ends_with(".mp3"));
+    }
+
+    #[test]
+    fn test_default_template_folder_uses_album_artist() {
+        let info = TrackInfo {
+            artist: Some("Track Artist".into()),
+            album_artist: Some("Album Artist".into()),
+            album: Some("Album".into()),
+            title: Some("Title".into()),
+            year: Some(2020),
+            track_number: Some(1),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        assert_eq!(rel, Path::new("Album Artist - 2020 - Album/01 - Title.mp3"));
+    }
+
+    #[test]
+    fn test_compilation_template_uses_va_folder_and_track_artist() {
+        let info = TrackInfo {
+            artist: Some("Aphex Twin".into()),
+            album_artist: Some("Various Artists".into()),
+            album: Some("Warp10".into()),
+            title: Some("Windowlicker".into()),
+            year: Some(1999),
+            track_number: Some(3),
+            is_compilation: true,
+            ..Default::default()
+        };
+        let rel = render_relative_path(COMPILATION_TEMPLATE, &info, "mp3");
+        assert_eq!(
+            rel,
+            Path::new("Various Artists - 1999 - Warp10/03 - Aphex Twin - Windowlicker.mp3")
+        );
+    }
+
+    #[test]
+    fn test_album_artist_token_falls_back_to_artist() {
+        let info = TrackInfo {
+            artist: Some("Solo".into()),
+            album: Some("Album".into()),
+            title: Some("Title".into()),
+            year: Some(2020),
+            track_number: Some(1),
+            ..Default::default()
+        };
+        let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
+        assert_eq!(rel, Path::new("Solo - 2020 - Album/01 - Title.mp3"));
     }
 
     #[test]

@@ -20,6 +20,18 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
     let info = match tag {
         Some(tag) => {
             let cover_art = tag.pictures().first().map(|pic| pic.data().to_vec());
+            let album_artist = tag
+                .get_string(&lofty::tag::ItemKey::AlbumArtist)
+                .map(|s| s.to_string());
+            // Compilation si le flag iTunes est posé, ou si l'album-artist est « VA ».
+            let comp_flag = tag
+                .get_string(&lofty::tag::ItemKey::FlagCompilation)
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let is_va = album_artist
+                .as_deref()
+                .map(crate::models::is_various_artists)
+                .unwrap_or(false);
             TrackInfo {
                 artist: tag.artist().map(|v| v.into_owned()),
                 album: tag.album().map(|v| v.into_owned()),
@@ -29,6 +41,8 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
                 total_tracks: tag.track_total(),
                 genre: tag.genre().map(|v| v.into_owned()),
                 cover_art,
+                album_artist,
+                is_compilation: comp_flag || is_va,
             }
         }
         None => TrackInfo::default(),
