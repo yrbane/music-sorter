@@ -5,6 +5,20 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.1.3 — 2026-07-15 · « Casse d'artiste unifiée »
+
+### Corrigé
+- **Dossiers d'artiste dupliqués selon la casse** (ex. `Boards Of Canada` vs
+  `Boards of Canada`). Deux défauts se combinaient :
+  - Le registre de casse n'était appliqué que sur les matchs API : les fichiers
+    déjà bien taggés ou rangés par heuristique gardaient leur casse brute. La
+    canonicalisation se fait désormais sur **tous** les chemins de sortie, via un
+    point unique `finalize`.
+  - En parallèle (`--workers N`), `canonicalize` renvoyait sa propre casse après
+    enregistrement au lieu de relire le gagnant : deux workers découvrant le même
+    artiste simultanément divergeaient. Il relit maintenant le nom stocké
+    (INSERT OR IGNORE → premier writer gagnant), garantissant la convergence.
+
 ## 0.1.2 — 2026-07-15 · « Intégration continue »
 
 ### Ajouté

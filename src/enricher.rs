@@ -13,16 +13,14 @@ use crate::musicbrainz::MusicBrainzClient;
 use crate::rate_limiter::RateLimiter;
 use crate::tags;
 
-/// Orchestre l'enrichissement des métadonnées audio via MusicBrainz, AcoustID, Cover Art Archive et Discogs
-/// Écrase l'artiste avec le nom canonique de la DB.
+/// Écrase l'artiste avec le nom fourni par la DB (MusicBrainz/Discogs).
+/// L'unification de casse est déléguée à `Enricher::finalize`, appelée sur tous
+/// les chemins de sortie d'`enrich` (pas seulement les matchs API).
 /// L'album n'est écrasé que si le fichier n'en a pas (évite de remplacer
 /// l'album original par une compilation).
-fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo, cache: &crate::cache::Cache) {
+fn override_from_db(info: &mut TrackInfo, db_info: &TrackInfo) {
     if let Some(artist) = db_info.artist.as_ref() {
-        // Canonicalise via le registre : le premier nom rencontré gagne
-        let canonical = crate::artist_registry::canonicalize(cache, artist)
-            .unwrap_or_else(|_| artist.clone());
-        info.artist = Some(canonical);
+        info.artist = Some(artist.clone());
     }
     // Ne PAS écraser l'album si on en a déjà un dans les tags locaux
     info.merge(db_info);
@@ -125,7 +123,7 @@ impl Enricher {
 
         if info.has_full_metadata() {
             // Métadonnées complètes sans appel API : confiance basée sur les tags embarqués.
-            return Ok((info, compute_confidence(had_embedded_org, false)));
+            return Ok(self.finalize(info, compute_confidence(had_embedded_org, false)));
         }
 
         let mut release_id: Option<String> = None;
@@ -145,7 +143,7 @@ impl Enricher {
                                 self.api_cache_ttl_secs,
                             )
                         {
-                            override_from_db(&mut info, &mb_info, &self.cache);
+                            override_from_db(&mut info, &mb_info);
                             release_id = rid;
                         }
                     }
@@ -168,7 +166,7 @@ impl Enricher {
                 existing_album.as_deref(),
                 self.api_cache_ttl_secs,
             ) {
-                override_from_db(&mut info, &mb_info, &self.cache);
+                override_from_db(&mut info, &mb_info);
                 release_id = Some(rid);
             }
         }
@@ -206,7 +204,7 @@ impl Enricher {
                                     genre: details.genre,
                                     ..Default::default()
                                 };
-                                override_from_db(&mut info, &details_info, &self.cache);
+                                override_from_db(&mut info, &details_info);
 
                                 if info.cover_art.is_none() {
                                     if let Some(ref cover_url) = details.cover_url {
@@ -223,7 +221,23 @@ impl Enricher {
         }
 
         let confidence = compute_confidence(had_embedded_org, release_id.is_some());
-        Ok((info, confidence))
+        Ok(self.finalize(info, confidence))
+    }
+
+    /// Point de sortie unique d'`enrich` : applique le registre de casse à
+    /// l'artiste pour garantir un dossier unique par artiste, quelle que soit la
+    /// source (tags complets, heuristiques ou match API). Idempotent.
+    fn finalize(
+        &self,
+        mut info: TrackInfo,
+        confidence: crate::models::Confidence,
+    ) -> (TrackInfo, crate::models::Confidence) {
+        if let Some(artist) = info.artist.as_ref() {
+            let canonical = crate::artist_registry::canonicalize(&self.cache, artist)
+                .unwrap_or_else(|_| artist.clone());
+            info.artist = Some(canonical);
+        }
+        (info, confidence)
     }
 }
 
@@ -253,28 +267,47 @@ mod tests {
     }
 
     #[test]
-    fn test_override_canonicalizes_artist() {
-        let dir = tempdir().unwrap();
-        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
-
-        // Premier appel : enregistre "Boards Of Canada" comme canonique
-        let mut info1 = TrackInfo::default();
-        let db_info1 = TrackInfo {
+    fn test_override_from_db_sets_db_artist_and_fills_missing() {
+        // override_from_db écrase l'artiste avec la valeur DB (casse brute :
+        // l'unification est déléguée à finalize) et complète les champs manquants.
+        let mut info = TrackInfo::default();
+        let db_info = TrackInfo {
             artist: Some("Boards Of Canada".into()),
             album: Some("Geogaddi".into()),
             ..Default::default()
         };
-        override_from_db(&mut info1, &db_info1, &cache);
-        assert_eq!(info1.artist, Some("Boards Of Canada".into()));
+        override_from_db(&mut info, &db_info);
+        assert_eq!(info.artist, Some("Boards Of Canada".into()));
+        assert_eq!(info.album, Some("Geogaddi".into()));
+    }
 
-        // Deuxième appel avec une casse différente : doit récupérer la casse précédente
-        let mut info2 = TrackInfo::default();
-        let db_info2 = TrackInfo {
-            artist: Some("boards of canada".into()),
-            album: Some("Music Has the Right to Children".into()),
-            ..Default::default()
-        };
-        override_from_db(&mut info2, &db_info2, &cache);
-        assert_eq!(info2.artist, Some("Boards Of Canada".into()));
+    /// finalize() doit unifier la casse de l'artiste sur TOUS les chemins de
+    /// sortie d'enrich() (y compris tags complets / heuristique, sans match API).
+    #[test]
+    fn test_finalize_unifies_artist_casing() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+        let enricher =
+            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+
+        // Premier artiste vu → enregistré tel quel.
+        let (i1, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("Boards Of Canada".into()),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(i1.artist, Some("Boards Of Canada".into()));
+
+        // Même artiste, casse différente → reprend la casse enregistrée.
+        let (i2, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("boards of canada".into()),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(i2.artist, Some("Boards Of Canada".into()));
     }
 }
