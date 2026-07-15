@@ -5,6 +5,16 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.5.1 — 2026-07-15 · « Nettoyage des copies redondantes »
+
+### Corrigé
+- En `--move`, un fichier déjà rangé (caché « organized »/« conflict » avec sa
+  destination existante) est désormais mis à la **corbeille** côté source au lieu
+  d'y rester : les copies laissées par d'anciens runs en mode copie sont enfin
+  nettoyées, la source se vide vraiment. Garde-fou : le hit cache exige
+  source_path + mtime + taille identiques (c'est bien le même fichier) ; la mise
+  en corbeille est récupérable.
+
 ## 0.5.0 — 2026-07-15 · « Quarantaine des erreurs »
 
 ### Ajouté

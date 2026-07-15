@@ -269,6 +269,11 @@ fn process_file(
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {
+                        // Copie source déjà organisée (ancien run en mode copie) :
+                        // en --move on la met à la corbeille pour vider la source.
+                        if should_trash_redundant_source(&status, opts.do_move, true) {
+                            let _ = trash::delete(file);
+                        }
                         return ProcessResult::CachedSkip {
                             from: file.to_path_buf(),
                             to: dest_pb,
@@ -496,6 +501,14 @@ fn process_file(
 /// - organized/conflict : toujours skip (le fichier est rangé).
 /// - unsorted : skip pendant `ttl_days`, ou toujours en mode `resume`.
 /// - autre (error, ...) : jamais skip (on retente).
+/// En mode `--move`, une source cachée « organized »/« conflict » dont la
+/// destination existe déjà est une **copie redondante** (issue d'un ancien run en
+/// mode copie) : elle doit partir à la corbeille pour que la source se vide.
+/// (Le hit cache exige source_path+mtime+size identiques → c'est bien le même fichier.)
+fn should_trash_redundant_source(status: &str, do_move: bool, dest_exists: bool) -> bool {
+    do_move && dest_exists && matches!(status, "organized" | "conflict")
+}
+
 /// Déplace un fichier en erreur **de contenu** (illisible, tags corrompus) vers
 /// `target/_errors/`, uniquement en mode `--move` (en copie la source n'est pas
 /// consommée). Renvoie la destination si le déplacement a réussi. Les erreurs
@@ -562,7 +575,20 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_skip_cached;
+    use super::{should_skip_cached, should_trash_redundant_source};
+
+    #[test]
+    fn test_trash_redundant_source_decision() {
+        // --move + déjà organisée + dest existante → corbeille.
+        assert!(should_trash_redundant_source("organized", true, true));
+        assert!(should_trash_redundant_source("conflict", true, true));
+        // Mode copie : on ne touche pas à la source.
+        assert!(!should_trash_redundant_source("organized", false, true));
+        // Dest absente : ce n'est pas une copie redondante.
+        assert!(!should_trash_redundant_source("organized", true, false));
+        // unsorted : laissé en source (peut vouloir une re-tentative).
+        assert!(!should_trash_redundant_source("unsorted", true, true));
+    }
 
     #[test]
     fn test_skip_organized_always() {
