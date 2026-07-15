@@ -5,6 +5,14 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.1.2 — 2026-07-15 · « Intégration continue »
+
+### Ajouté
+- **Workflow CI GitHub Actions** (`.github/workflows/ci.yml`) : build release,
+  suite de tests complète et `clippy` sur chaque push `main` et chaque pull request.
+  Clippy est pour l'instant informatif ; le passage en `-D warnings` suivra le
+  nettoyage des avertissements existants.
+
 ## 0.1.1 — 2026-07-15 · « Fiabilité réseau »
 
 ### Corrigé
