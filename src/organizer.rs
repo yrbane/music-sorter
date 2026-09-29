@@ -61,7 +61,8 @@ pub const DEFAULT_TEMPLATE: &str = "{album_artist} - {year} - {album}/{track} - 
 
 /// Template appliqué aux compilations : le dossier utilise l'album-artist
 /// (« Various Artists ») et le nom de fichier inclut l'artiste de piste.
-pub const COMPILATION_TEMPLATE: &str = "{album_artist} - {year} - {album}/{track} - {artist} - {title}";
+pub const COMPILATION_TEMPLATE: &str =
+    "{album_artist} - {year} - {album}/{track} - {artist} - {title}";
 
 /// Substitue un token par sa valeur dans `info`. {track} est zero-paddé sur 2.
 fn token_value(token: &str, info: &TrackInfo) -> String {
@@ -77,7 +78,10 @@ fn token_value(token: &str, info: &TrackInfo) -> String {
         "title" => info.title.clone().unwrap_or_default(),
         "genre" => info.genre.clone().unwrap_or_default(),
         "year" => info.year.map(|y| y.to_string()).unwrap_or_default(),
-        "track" => info.track_number.map(|n| format!("{:02}", n)).unwrap_or_default(),
+        "track" => info
+            .track_number
+            .map(|n| format!("{:02}", n))
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -123,8 +127,7 @@ pub fn render_relative_path(template: &str, info: &TrackInfo, ext: &str) -> Path
         let substituted = substitute_segment(segment, info);
         let collapsed = collapse_separators(&substituted);
         // Tronque à la limite du système de fichiers (évite « File name too long »).
-        let mut component =
-            truncate_component(&sanitize_filename(&collapsed), MAX_COMPONENT_BYTES);
+        let mut component = truncate_component(&sanitize_filename(&collapsed), MAX_COMPONENT_BYTES);
         if i == last && !ext.is_empty() {
             // Un nom de fichier vide donnerait un chemin = dossier → « Is a directory ».
             if component.is_empty() {
@@ -258,7 +261,9 @@ pub fn copy_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
         if src_bitrate > dst_bitrate {
             // La source est de meilleure qualité → on remplace
             copy_with_reflink(source, destination)?;
-            return Ok(CopyResult::Replaced { bitrate: src_bitrate });
+            return Ok(CopyResult::Replaced {
+                bitrate: src_bitrate,
+            });
         } else {
             // La destination est au moins aussi bonne → on garde
             return Ok(CopyResult::Skipped {
@@ -313,7 +318,9 @@ pub fn move_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
             // Source meilleure → on remplace dest et on consomme source
             std::fs::remove_file(destination)?;
             move_or_copy_delete(source, destination)?;
-            return Ok(CopyResult::Replaced { bitrate: src_bitrate });
+            return Ok(CopyResult::Replaced {
+                bitrate: src_bitrate,
+            });
         } else {
             // Dest au moins aussi bonne → on supprime juste source (consolidation)
             std::fs::remove_file(source)?;
@@ -328,6 +335,26 @@ pub fn move_to_destination(source: &Path, destination: &Path) -> Result<CopyResu
 }
 
 /// Supprime récursivement les sous-dossiers vides sous `root` (root inclus exclu).
+/// Vrai si `dir` existe et ne contient plus aucun fichier audio (récursif) :
+/// typiquement un dossier d'album vidé par la dédup où ne reste que cover.jpg.
+pub fn is_audio_orphan_dir(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    !walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .any(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| {
+                    crate::models::SUPPORTED_EXTENSIONS.contains(&x.to_lowercase().as_str())
+                })
+        })
+}
+
 /// Utilise `remove_dir` (non-récursif) qui n'efface que les dossiers réellement vides.
 pub fn cleanup_empty_dirs(root: &Path) -> usize {
     use walkdir::WalkDir;
@@ -373,7 +400,9 @@ mod tests {
 
         assert_eq!(
             result,
-            Path::new("/home/user/Music/Boards of Canada - 2002 - Geogaddi/02 - Music Is Math.flac")
+            Path::new(
+                "/home/user/Music/Boards of Canada - 2002 - Geogaddi/02 - Music Is Math.flac"
+            )
         );
     }
 
@@ -492,7 +521,10 @@ mod tests {
         let f = dir.path().join("track.mp3");
         std::fs::write(&f, b"audio-bytes").unwrap();
         let result = move_to_destination(&f, &f).unwrap();
-        assert!(f.exists(), "le fichier a été supprimé lors d'un move sur soi-même !");
+        assert!(
+            f.exists(),
+            "le fichier a été supprimé lors d'un move sur soi-même !"
+        );
         assert!(matches!(result, CopyResult::Skipped { .. }));
     }
 
@@ -539,7 +571,11 @@ mod tests {
         };
         let rel = render_relative_path(DEFAULT_TEMPLATE, &info, "mp3");
         let fname = rel.file_name().unwrap().to_str().unwrap();
-        assert!(fname.len() <= MAX_COMPONENT_BYTES + 5, "nom trop long : {}", fname.len());
+        assert!(
+            fname.len() <= MAX_COMPONENT_BYTES + 5,
+            "nom trop long : {}",
+            fname.len()
+        );
         assert!(fname.ends_with(".mp3"));
     }
 
@@ -698,11 +734,8 @@ mod tests {
             track_number: Some(8),
             ..Default::default()
         };
-        let rel = render_relative_path(
-            "{artist}/{year} - {album}/{track} - {title}",
-            &info,
-            "flac",
-        );
+        let rel =
+            render_relative_path("{artist}/{year} - {album}/{track} - {title}", &info, "flac");
         assert_eq!(
             rel,
             Path::new("Aphex Twin/2001 - Drukqs/08 - Avril 14th.flac")
@@ -794,7 +827,10 @@ mod tests {
         let result = move_to_destination(&source, &dest).unwrap();
 
         assert!(matches!(result, CopyResult::Skipped { .. }));
-        assert!(!source.exists(), "source doit être supprimée même si Skipped");
+        assert!(
+            !source.exists(),
+            "source doit être supprimée même si Skipped"
+        );
         assert!(dest.exists(), "dest intacte");
         assert_eq!(std::fs::read(&dest).unwrap(), b"dst");
     }
@@ -817,5 +853,24 @@ mod tests {
         assert!(!root.join("empty2").exists());
         assert!(root.join("keep").exists(), "dossier non-vide préservé");
         assert!(root.exists(), "root jamais supprimé");
+    }
+
+    /// Un dossier d'album vidé de son audio par la dédup (reste cover.jpg) est
+    /// orphelin ; un dossier contenant encore de l'audio ne l'est pas.
+    #[test]
+    fn test_is_audio_orphan_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = dir.path().join("Artist - 2015 - Album");
+        std::fs::create_dir(&orphan).unwrap();
+        std::fs::write(orphan.join("cover.jpg"), b"img").unwrap();
+        assert!(is_audio_orphan_dir(&orphan));
+
+        let alive = dir.path().join("Artist - 2016 - Album");
+        std::fs::create_dir(&alive).unwrap();
+        std::fs::write(alive.join("cover.jpg"), b"img").unwrap();
+        std::fs::write(alive.join("01 - Song.flac"), b"audio").unwrap();
+        assert!(!is_audio_orphan_dir(&alive));
+
+        assert!(!is_audio_orphan_dir(&dir.path().join("absent")));
     }
 }

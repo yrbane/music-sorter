@@ -9,8 +9,8 @@ use std::path::Path;
 /// Lit les tags audio d'un fichier et retourne un TrackInfo
 pub fn read_tags(path: &Path) -> Result<TrackInfo> {
     // Ouvre le fichier avec lofty en utilisant read_from_path
-    let tagged_file =
-        lofty::read_from_path(path).with_context(|| format!("Impossible de lire : {}", path.display()))?;
+    let tagged_file = lofty::read_from_path(path)
+        .with_context(|| format!("Impossible de lire : {}", path.display()))?;
 
     // Récupère le tag principal ou le premier tag disponible
     let tag = tagged_file
@@ -23,14 +23,15 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
             let album_artist = tag
                 .get_string(&lofty::tag::ItemKey::AlbumArtist)
                 .map(|s| s.to_string());
-            // Compilation si le flag iTunes est posé, ou si l'album-artist est « VA ».
+            // Compilation si le flag iTunes est posé, ou si l'album-artist est
+            // « VA » / multi-crédité (« A / B / C »).
             let comp_flag = tag
                 .get_string(&lofty::tag::ItemKey::FlagCompilation)
                 .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             let is_va = album_artist
                 .as_deref()
-                .map(crate::models::is_various_artists)
+                .map(crate::models::is_compilation_album_artist)
                 .unwrap_or(false);
             TrackInfo {
                 artist: tag.artist().map(|v| v.into_owned()),
@@ -43,6 +44,7 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
                 cover_art,
                 album_artist,
                 is_compilation: comp_flag || is_va,
+                normalized: false,
             }
         }
         None => TrackInfo::default(),
@@ -54,8 +56,8 @@ pub fn read_tags(path: &Path) -> Result<TrackInfo> {
 /// Retourne le bitrate audio en kbps
 pub fn get_bitrate(path: &Path) -> Result<u32> {
     // Ouvre le fichier avec lofty
-    let tagged_file =
-        lofty::read_from_path(path).with_context(|| format!("Impossible de lire : {}", path.display()))?;
+    let tagged_file = lofty::read_from_path(path)
+        .with_context(|| format!("Impossible de lire : {}", path.display()))?;
 
     // Tente de récupérer le bitrate audio, puis le bitrate global
     let bitrate = tagged_file
@@ -116,7 +118,8 @@ pub fn write_tags(path: &Path, info: &TrackInfo, overwrite: bool) -> Result<()> 
         if let Some(v) = tag_value_to_set(tag.track().is_some(), info.track_number, overwrite) {
             tag.set_track(v);
         }
-        if let Some(v) = tag_value_to_set(tag.track_total().is_some(), info.total_tracks, overwrite) {
+        if let Some(v) = tag_value_to_set(tag.track_total().is_some(), info.total_tracks, overwrite)
+        {
             tag.set_track_total(v);
         }
         if let Some(v) = tag_value_to_set(tag.genre().is_some(), info.genre.clone(), overwrite) {
@@ -153,7 +156,12 @@ pub fn write_tags(path: &Path, info: &TrackInfo, overwrite: bool) -> Result<()> 
     // Sauvegarde le tag dans le fichier
     tagged_file
         .save_to_path(path, WriteOptions::default())
-        .with_context(|| format!("Impossible de sauvegarder les tags dans : {}", path.display()))?;
+        .with_context(|| {
+            format!(
+                "Impossible de sauvegarder les tags dans : {}",
+                path.display()
+            )
+        })?;
 
     Ok(())
 }
@@ -224,10 +232,7 @@ pub fn parse_folder_metadata(path: &Path) -> (Option<String>, Option<u32>, Optio
         None => return (None, None, None),
     };
 
-    if parent_name.is_empty()
-        || parent_name.starts_with('_')
-        || parent_name.starts_with('.')
-    {
+    if parent_name.is_empty() || parent_name.starts_with('_') || parent_name.starts_with('.') {
         return (None, None, None);
     }
 
@@ -376,9 +381,8 @@ mod tests {
 
     #[test]
     fn test_parse_folder_artist_album_no_year() {
-        let (a, y, al) = parse_folder_metadata(Path::new(
-            "/music/Boards of Canada - Geogaddi/01 track.mp3",
-        ));
+        let (a, y, al) =
+            parse_folder_metadata(Path::new("/music/Boards of Canada - Geogaddi/01 track.mp3"));
         assert_eq!(a, Some("Boards of Canada".into()));
         assert_eq!(y, None);
         assert_eq!(al, Some("Geogaddi".into()));
@@ -386,9 +390,7 @@ mod tests {
 
     #[test]
     fn test_parse_folder_no_separator_returns_none() {
-        let (a, y, al) = parse_folder_metadata(Path::new(
-            "/music/JustAnAlbumName/track.mp3",
-        ));
+        let (a, y, al) = parse_folder_metadata(Path::new("/music/JustAnAlbumName/track.mp3"));
         assert_eq!(a, None);
         assert_eq!(y, None);
         assert_eq!(al, None);
@@ -396,9 +398,7 @@ mod tests {
 
     #[test]
     fn test_parse_folder_skips_underscore_prefix() {
-        let (a, _, al) = parse_folder_metadata(Path::new(
-            "/music/_unsorted/Foo - Bar/track.mp3",
-        ));
+        let (a, _, al) = parse_folder_metadata(Path::new("/music/_unsorted/Foo - Bar/track.mp3"));
         // Le parent direct (« Foo - Bar ») est valide ici, mais on saurait skip
         // si c'était _unsorted lui-même qui contenait la file. Test vérifie que
         // le filtre s'applique seulement au parent direct :
@@ -417,9 +417,8 @@ mod tests {
     #[test]
     fn test_parse_folder_album_with_dashes() {
         // « Album - With - Dashes » → artist=Artist, album="Album - With - Dashes"
-        let (a, _, al) = parse_folder_metadata(Path::new(
-            "/music/Artist - Album - With - Dashes/track.mp3",
-        ));
+        let (a, _, al) =
+            parse_folder_metadata(Path::new("/music/Artist - Album - With - Dashes/track.mp3"));
         assert_eq!(a, Some("Artist".into()));
         assert_eq!(al, Some("Album - With - Dashes".into()));
     }
@@ -427,9 +426,7 @@ mod tests {
     #[test]
     fn test_parse_folder_year_out_of_range_falls_back() {
         // « 999 » n'est pas une année valide → on retombe sur le pattern Artist - Album
-        let (a, y, al) = parse_folder_metadata(Path::new(
-            "/music/Artist - 999 - Album/track.mp3",
-        ));
+        let (a, y, al) = parse_folder_metadata(Path::new("/music/Artist - 999 - Album/track.mp3"));
         assert_eq!(a, Some("Artist".into()));
         assert_eq!(y, None);
         assert_eq!(al, Some("999 - Album".into()));

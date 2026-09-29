@@ -5,6 +5,56 @@ Toutes les modifications notables de ce projet sont documentées dans ce fichier
 Le format s'inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
 et le projet suit le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## 0.7.0 — 2026-09-29 · « Compilations fiables & tags assainis »
+
+### Corrigé
+- **Compilation décidée par l'album, plus par la piste** : le secondary-type
+  « Compilation » de MusicBrainz (qui couvre aussi des rééditions mono-artiste,
+  ex. deux EP réunis) ne bascule plus un album en `Various Artists`. Seul un
+  crédit de release « Various Artists » compte, et un album-artist local
+  explicite prime toujours sur le flag d'une DB externe. Fini l'album éclaté
+  entre `Artiste - Année - Album/` et `Various Artists - Année - Album/`.
+- **Album-artist multi-crédité** (`A / B / C`, `A; B`) reconnu comme
+  compilation → dossier `Various Artists` au lieu d'un nom de dossier de 170
+  caractères.
+- **Album-artist canonisé** via le registre d'artistes, désormais insensible à
+  l'article initial : « Future Sound of London » rejoint le dossier
+  « The Future Sound of London ».
+- **Registre d'albums indexé par album-artist** : les pistes d'une compilation
+  sans année héritent de l'année vue sur les autres pistes (plus de dossier
+  sans année à côté du dossier daté).
+- **Dossiers de service exclus du scan** (`_unsorted/`, `_review/`, `_errors/`) :
+  un tri sur place ne recopie plus `_unsorted/` dans `_unsorted/_unsorted/`.
+- **Dédup acoustique propre** : quand un fichier de meilleure qualité remplace un
+  exemplaire déjà rangé, le dossier d'album vidé (reste `cover.jpg`) part aussi
+  à la corbeille et toutes les références en base (`processed_files`,
+  `content_index`, `acoustic_index`) sont redirigées vers le remplaçant.
+- **Retri sur place sûr en `--move`** : un fichier n'est plus considéré
+  « doublon de contenu » de lui-même (il aurait été supprimé), et un fichier
+  renommé sur place voit ses références en base suivre le nouveau chemin.
+- **Registre d'artistes migré** à l'ouverture : les clés enregistrées avec
+  l'article (« the … ») par les versions précédentes rejoignent la clé sans
+  article.
+
+### Ajouté
+- **Normalisation des tags** (`tag_normalizer.rs`) avant rangement :
+  extension audio collée au titre (`Red World.wav`) retirée ; piste de
+  compilation dont l'artiste est caché dans le titre (`100 Soda303 - Red World`
+  avec artist = Various Artists) éclatée en artiste + titre, numéro de piste
+  redondant retiré ; album préfixé du catalogue et de l'artiste
+  (`ANJDEE234 Cubicolor - Down The Wall EP`) nettoyé ; groupes répétés en fin de
+  titre (`Recovery (Vessels Remix) [Bonus Track] (Vessels Remix)`) dédoublonnés.
+- **Format WAV** pris en charge (lecture/écriture des tags via lofty, empreinte
+  via fpcalc).
+- **Tags corrigés réécrits** dans le fichier dès que la normalisation a modifié
+  artiste, titre ou album, même sans `--fix-tags` (correction déterministe,
+  sans appel API). `--fix-tags` reste nécessaire pour les corrections issues
+  des API.
+
+### Tests
+- 207 tests unitaires (+ 24) couvrant chaque correctif ; suite d'intégration
+  inchangée.
+
 ## 0.6.0 — 2026-07-15 · « Pochettes locales & compilations »
 
 ### Ajouté

@@ -34,7 +34,10 @@ impl MusicBrainzClient {
             .pool_max_idle_per_host(4)
             .build()?;
 
-        Ok(Self { client, rate_limiter })
+        Ok(Self {
+            client,
+            rate_limiter,
+        })
     }
 
     /// Recherche textuelle en lisant uniquement le cache (pas d'appel HTTP)
@@ -73,7 +76,9 @@ impl MusicBrainzClient {
         if let Some(json_str) = cache.lookup_api("mb_lookup", &key, ttl_secs)? {
             let json: serde_json::Value = serde_json::from_str(&json_str)?;
             let release_id = extract_release_id(&json);
-            return Ok(parse_recording_response(&json, existing_album).map(|info| (info, release_id)));
+            return Ok(
+                parse_recording_response(&json, existing_album).map(|info| (info, release_id))
+            );
         }
         Ok(None)
     }
@@ -87,7 +92,9 @@ impl MusicBrainzClient {
         existing_album: Option<&str>,
         ttl_secs: i64,
     ) -> Result<Option<(TrackInfo, String)>> {
-        if let Some(hit) = Self::search_by_text_cached(cache, artist, title, existing_album, ttl_secs)? {
+        if let Some(hit) =
+            Self::search_by_text_cached(cache, artist, title, existing_album, ttl_secs)?
+        {
             return Ok(Some(hit));
         }
 
@@ -120,7 +127,9 @@ impl MusicBrainzClient {
         existing_album: Option<&str>,
         ttl_secs: i64,
     ) -> Result<Option<(TrackInfo, Option<String>)>> {
-        if let Some(hit) = Self::lookup_by_recording_id_cached(cache, recording_id, existing_album, ttl_secs)? {
+        if let Some(hit) =
+            Self::lookup_by_recording_id_cached(cache, recording_id, existing_album, ttl_secs)?
+        {
             return Ok(Some(hit));
         }
 
@@ -229,7 +238,12 @@ fn pick_best_release<'a>(
 }
 
 /// Extrait les infos d'un release dans un TrackInfo partiel
-fn extract_from_release(release: &serde_json::Value, title: Option<String>, artist: Option<String>, genre: Option<String>) -> TrackInfo {
+fn extract_from_release(
+    release: &serde_json::Value,
+    title: Option<String>,
+    artist: Option<String>,
+    genre: Option<String>,
+) -> TrackInfo {
     let album = release["title"].as_str().map(|s| s.to_string());
 
     let year = release["date"]
@@ -239,25 +253,19 @@ fn extract_from_release(release: &serde_json::Value, title: Option<String>, arti
 
     let media = &release["media"][0];
 
-    let track_number = media["track-offset"]
-        .as_u64()
-        .map(|n| n as u32 + 1);
+    let track_number = media["track-offset"].as_u64().map(|n| n as u32 + 1);
 
-    let total_tracks = media["track-count"]
-        .as_u64()
-        .map(|n| n as u32);
+    let total_tracks = media["track-count"].as_u64().map(|n| n as u32);
 
-    // Artiste de release (album-artist) et détection de compilation.
+    // Artiste de release (album-artist) et détection de compilation. Seul le
+    // crédit « Various Artists » compte : le secondary-type « Compilation » de
+    // MusicBrainz couvre aussi des rééditions mono-artiste (deux EP réunis…).
     let album_artist = release["artist-credit"][0]["name"]
         .as_str()
         .map(|s| s.to_string());
-    let secondary_comp = release["release-group"]["secondary-types"]
-        .as_array()
-        .map(|arr| arr.iter().any(|t| t.as_str() == Some("Compilation")))
-        .unwrap_or(false);
     let is_va = album_artist
         .as_deref()
-        .map(crate::models::is_various_artists)
+        .map(crate::models::is_compilation_album_artist)
         .unwrap_or(false);
 
     TrackInfo {
@@ -270,20 +278,22 @@ fn extract_from_release(release: &serde_json::Value, title: Option<String>, arti
         genre,
         cover_art: None,
         album_artist,
-        is_compilation: secondary_comp || is_va,
+        is_compilation: is_va,
+        normalized: false,
     }
 }
 
 /// Parse une réponse de type recording (lookup par ID)
 /// existing_album permet de préférer le release correspondant à l'album déjà dans les tags
-fn parse_recording_response(json: &serde_json::Value, existing_album: Option<&str>) -> Option<TrackInfo> {
+fn parse_recording_response(
+    json: &serde_json::Value,
+    existing_album: Option<&str>,
+) -> Option<TrackInfo> {
     let title = json["title"].as_str().map(|s| s.to_string());
     let artist = json["artist-credit"][0]["name"]
         .as_str()
         .map(|s| s.to_string());
-    let genre = json["genres"][0]["name"]
-        .as_str()
-        .map(|s| s.to_string());
+    let genre = json["genres"][0]["name"].as_str().map(|s| s.to_string());
 
     let releases = json["releases"].as_array()?;
     let release = pick_best_release(releases, existing_album)?;
@@ -293,7 +303,10 @@ fn parse_recording_response(json: &serde_json::Value, existing_album: Option<&st
 
 /// Parse une réponse de type search (recherche textuelle)
 /// Ne retourne un résultat que si le score est >= 80
-fn parse_search_response(json: &serde_json::Value, existing_album: Option<&str>) -> Option<(TrackInfo, String)> {
+fn parse_search_response(
+    json: &serde_json::Value,
+    existing_album: Option<&str>,
+) -> Option<(TrackInfo, String)> {
     let recordings = json["recordings"].as_array()?;
     let first = recordings.first()?;
 
@@ -471,7 +484,14 @@ mod tests {
         let key = crate::cache_keys::api_key(&format!("{}|{}|{}", "Y", "X", ""));
         cache.record_api("mb_search", &key, json).unwrap();
 
-        let result = MusicBrainzClient::search_by_text_cached(&cache, "Y", "X", None, MB_DEFAULT_CACHE_TTL_SECS).unwrap();
+        let result = MusicBrainzClient::search_by_text_cached(
+            &cache,
+            "Y",
+            "X",
+            None,
+            MB_DEFAULT_CACHE_TTL_SECS,
+        )
+        .unwrap();
         assert!(result.is_some());
         let (info, release_id) = result.unwrap();
         assert_eq!(info.title, Some("X".into()));
@@ -482,7 +502,14 @@ mod tests {
     fn test_mb_search_cache_miss_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let cache = crate::cache::Cache::open(dir.path()).unwrap();
-        let result = MusicBrainzClient::search_by_text_cached(&cache, "Unknown", "Track", None, MB_DEFAULT_CACHE_TTL_SECS).unwrap();
+        let result = MusicBrainzClient::search_by_text_cached(
+            &cache,
+            "Unknown",
+            "Track",
+            None,
+            MB_DEFAULT_CACHE_TTL_SECS,
+        )
+        .unwrap();
         assert!(result.is_none());
     }
 
@@ -498,7 +525,40 @@ mod tests {
         let key = crate::cache_keys::api_key(&format!("{}|{}", "rec-id-123", ""));
         cache.record_api("mb_lookup", &key, json).unwrap();
 
-        let result = MusicBrainzClient::lookup_by_recording_id_cached(&cache, "rec-id-123", None, MB_DEFAULT_CACHE_TTL_SECS).unwrap();
+        let result = MusicBrainzClient::lookup_by_recording_id_cached(
+            &cache,
+            "rec-id-123",
+            None,
+            MB_DEFAULT_CACHE_TTL_SECS,
+        )
+        .unwrap();
         assert!(result.is_some());
+    }
+
+    /// Le secondary-type « Compilation » seul (ex. deux EP réunis) ne doit pas
+    /// faire basculer un album mono-artiste en Various Artists.
+    #[test]
+    fn test_extract_from_release_secondary_compilation_without_va_is_not_compilation() {
+        let release = serde_json::json!({
+            "title": "Odyssey / Sonne",
+            "artist-credit": [{"name": "Rival Consoles"}],
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]},
+            "media": [{}]
+        });
+        let info = extract_from_release(&release, None, None, None);
+        assert!(!info.is_compilation);
+        assert_eq!(info.album_artist.as_deref(), Some("Rival Consoles"));
+    }
+
+    #[test]
+    fn test_extract_from_release_va_credit_is_compilation() {
+        let release = serde_json::json!({
+            "title": "Erased Tapes Collection VI",
+            "artist-credit": [{"name": "Various Artists"}],
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]},
+            "media": [{}]
+        });
+        let info = extract_from_release(&release, None, None, None);
+        assert!(info.is_compilation);
     }
 }

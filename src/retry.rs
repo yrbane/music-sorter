@@ -84,7 +84,11 @@ pub fn backoff_delay(
     if let Some(ra) = retry_after {
         return ra.min(MAX_RETRY_AFTER);
     }
-    policy.delays.get(attempt).copied().unwrap_or(Duration::ZERO)
+    policy
+        .delays
+        .get(attempt)
+        .copied()
+        .unwrap_or(Duration::ZERO)
 }
 
 /// Pilote une opération avec retry : renvoie `Some(T)` au premier succès,
@@ -148,7 +152,9 @@ pub fn get_with_retry(
 }
 
 /// Convertit une réponse HTTP en `Outcome` en s'appuyant sur [`classify`].
-fn classify_response(response: reqwest::blocking::Response) -> Outcome<reqwest::blocking::Response> {
+fn classify_response(
+    response: reqwest::blocking::Response,
+) -> Outcome<reqwest::blocking::Response> {
     let status = response.status().as_u16();
     let retry_after = response
         .headers()
@@ -213,8 +219,7 @@ mod tests {
 
     #[test]
     fn test_backoff_uses_policy_delay() {
-        let policy =
-            RetryPolicy::from_delays(vec![Duration::from_secs(1), Duration::from_secs(2)]);
+        let policy = RetryPolicy::from_delays(vec![Duration::from_secs(1), Duration::from_secs(2)]);
         assert_eq!(backoff_delay(&policy, 0, None), Duration::from_secs(1));
         assert_eq!(backoff_delay(&policy, 1, None), Duration::from_secs(2));
     }

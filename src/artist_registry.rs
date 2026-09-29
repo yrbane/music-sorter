@@ -9,7 +9,9 @@ pub fn canonicalize(cache: &Cache, name: &str) -> anyhow::Result<String> {
     // Relire le nom stocké plutôt que de renvoyer `name` : en cas de course entre
     // workers, le premier writer gagne (INSERT OR IGNORE) et tous les appels
     // convergent vers la même casse. Sinon chaque worker garderait la sienne.
-    Ok(cache.lookup_artist(name)?.unwrap_or_else(|| name.to_string()))
+    Ok(cache
+        .lookup_artist(name)?
+        .unwrap_or_else(|| name.to_string()))
 }
 
 #[cfg(test)]
@@ -58,8 +60,7 @@ mod tests {
                 })
                 .collect();
 
-            let results: HashSet<String> =
-                handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let results: HashSet<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
             assert_eq!(
                 results.len(),
@@ -67,5 +68,19 @@ mod tests {
                 "les workers ont divergé sur la casse de l'artiste : {results:?}"
             );
         }
+    }
+
+    /// « The Future Sound of London » et « Future Sound of London » sont le même
+    /// artiste : l'article initial est ignoré pour la clé du registre.
+    #[test]
+    fn test_leading_the_is_ignored() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        let a = canonicalize(&cache, "The Future Sound of London").unwrap();
+        assert_eq!(a, "The Future Sound of London");
+        let b = canonicalize(&cache, "Future Sound of London").unwrap();
+        assert_eq!(b, "The Future Sound of London");
+        let c = canonicalize(&cache, "future sound of london").unwrap();
+        assert_eq!(c, "The Future Sound of London");
     }
 }

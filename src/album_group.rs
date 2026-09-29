@@ -82,8 +82,15 @@ mod tests {
             // L'année « la plus ancienne » n'est connue qu'une fois TOUS les fichiers
             // vus : le registre final doit tenir 2002 (la consolidation post-passe
             // l'appliquera aux dossiers).
-            let (_, year) = cache.lookup_album("boards of canada", "geogaddi").unwrap().unwrap();
-            assert_eq!(year, Some(2002), "le registre final doit tenir la plus ancienne année");
+            let (_, year) = cache
+                .lookup_album("boards of canada", "geogaddi")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                year,
+                Some(2002),
+                "le registre final doit tenir la plus ancienne année"
+            );
         }
     }
 

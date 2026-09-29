@@ -121,6 +121,10 @@ impl Enricher {
             }
         }
 
+        // Normalisation des tags bancals (extension dans le titre, artiste caché
+        // dans le titre d'une compilation, album préfixé du catalogue…).
+        crate::tag_normalizer::normalize(&mut info);
+
         // Pochette locale : si pas de pochette embarquée, réutiliser une image du
         // dossier (folder.jpg/cover.jpg…). Priorité embarqué > local > API.
         if info.cover_art.is_none() {
@@ -191,13 +195,22 @@ impl Enricher {
                 let album = info.album.as_deref().unwrap_or("");
 
                 if !artist.is_empty() && !album.is_empty() {
-                    if let Ok(Some((discogs_info, resource_url))) =
-                        discogs.search_release_with_cache(&self.cache, artist, album, self.api_cache_ttl_secs)
+                    if let Ok(Some((discogs_info, resource_url))) = discogs
+                        .search_release_with_cache(
+                            &self.cache,
+                            artist,
+                            album,
+                            self.api_cache_ttl_secs,
+                        )
                     {
                         info.merge(&discogs_info);
 
                         if let Some(ref url) = resource_url {
-                            if let Ok(Some(details)) = discogs.get_release_details_with_cache(&self.cache, url, self.api_cache_ttl_secs) {
+                            if let Ok(Some(details)) = discogs.get_release_details_with_cache(
+                                &self.cache,
+                                url,
+                                self.api_cache_ttl_secs,
+                            ) {
                                 // Préférer le nom canonique Discogs pour artiste et album
                                 let details_info = TrackInfo {
                                     artist: details.artist,
@@ -294,20 +307,26 @@ impl Enricher {
                 .unwrap_or_else(|_| artist.clone());
             info.artist = Some(canonical);
         }
-        // Registre d'album : unifie la casse du nom d'album (première vue) et
-        // retient l'année la plus ancienne connue (artiste déjà canonicalisé).
-        if let (Some(artist), Some(album)) = (info.artist.as_ref(), info.album.as_ref()) {
-            if let Ok((canon_album, canon_year)) =
-                crate::album_group::canonicalize(&self.cache, artist, album, info.year)
-            {
-                info.album = Some(canon_album);
-                info.year = canon_year;
-            }
-        }
         // Compilation : l'album-artist canonique est « Various Artists » (regroupe
-        // toutes les compilations dans un même dossier).
+        // toutes les compilations dans un même dossier). Sinon l'album-artist
+        // passe lui aussi par le registre (même dossier que l'artiste de piste).
         if info.is_compilation {
             info.album_artist = Some(crate::models::VARIOUS_ARTISTS.to_string());
+        } else if let Some(album_artist) = info.album_artist.as_ref() {
+            let canonical = crate::artist_registry::canonicalize(&self.cache, album_artist)
+                .unwrap_or_else(|_| album_artist.clone());
+            info.album_artist = Some(canonical);
+        }
+        // Registre d'album : unifie la casse du nom d'album (première vue) et
+        // retient l'année la plus ancienne connue. Clé = album-artist (toutes les
+        // pistes d'une compilation partagent la même entrée), repli artiste.
+        let registry_artist = info.album_artist.clone().or_else(|| info.artist.clone());
+        if let (Some(artist), Some(album)) = (registry_artist, info.album.as_ref())
+            && let Ok((canon_album, canon_year)) =
+                crate::album_group::canonicalize(&self.cache, &artist, album, info.year)
+        {
+            info.album = Some(canon_album);
+            info.year = canon_year;
         }
         (info, confidence)
     }
@@ -359,8 +378,7 @@ mod tests {
     fn test_finalize_unifies_artist_casing() {
         let dir = tempdir().unwrap();
         let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
-        let enricher =
-            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        let enricher = Enricher::new(&crate::config::Config::default(), cache).unwrap();
 
         // Premier artiste vu → enregistré tel quel.
         let (i1, _) = enricher.finalize(
@@ -388,8 +406,7 @@ mod tests {
     fn test_finalize_sets_various_artists_for_compilation() {
         let dir = tempdir().unwrap();
         let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
-        let enricher =
-            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        let enricher = Enricher::new(&crate::config::Config::default(), cache).unwrap();
         let (info, _) = enricher.finalize(
             TrackInfo {
                 artist: Some("Some DJ".into()),
@@ -408,8 +425,7 @@ mod tests {
     fn test_finalize_unifies_album_casing_and_year() {
         let dir = tempdir().unwrap();
         let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
-        let enricher =
-            Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        let enricher = Enricher::new(&crate::config::Config::default(), cache).unwrap();
 
         let (i1, _) = enricher.finalize(
             TrackInfo {
@@ -435,5 +451,64 @@ mod tests {
         );
         assert_eq!(i2.album, Some("Geogaddi".into()));
         assert_eq!(i2.year, Some(2002));
+    }
+
+    /// L'album-artist passe aussi par le registre : « Future Sound of London »
+    /// rejoint le dossier « The Future Sound of London » déjà connu.
+    #[test]
+    fn test_finalize_canonicalizes_album_artist() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+        let enricher = Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        enricher.finalize(
+            TrackInfo {
+                artist: Some("The Future Sound of London".into()),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        let (info, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("Yage".into()),
+                album_artist: Some("Future Sound of London".into()),
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(
+            info.album_artist.as_deref(),
+            Some("The Future Sound of London")
+        );
+    }
+
+    /// Le registre d'album est indexé par album-artist : les pistes d'une
+    /// compilation sans année héritent de l'année vue sur d'autres pistes.
+    #[test]
+    fn test_finalize_compilation_year_shared_across_track_artists() {
+        let dir = tempdir().unwrap();
+        let cache = Arc::new(crate::cache::Cache::open(dir.path()).unwrap());
+        let enricher = Enricher::new(&crate::config::Config::default(), cache).unwrap();
+        enricher.finalize(
+            TrackInfo {
+                artist: Some("Drøn".into()),
+                album: Some("Mind Maps 4".into()),
+                year: Some(2023),
+                is_compilation: true,
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        let (info, _) = enricher.finalize(
+            TrackInfo {
+                artist: Some("Karsten Pflum".into()),
+                album: Some("mind maps 4".into()),
+                year: None,
+                is_compilation: true,
+                ..Default::default()
+            },
+            crate::models::Confidence::Medium,
+        );
+        assert_eq!(info.year, Some(2023));
+        assert_eq!(info.album.as_deref(), Some("Mind Maps 4"));
     }
 }

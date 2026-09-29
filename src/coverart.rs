@@ -77,7 +77,10 @@ impl CoverArtClient {
             .pool_max_idle_per_host(4)
             .build()?;
 
-        Ok(Self { client, rate_limiter })
+        Ok(Self {
+            client,
+            rate_limiter,
+        })
     }
 
     /// Récupère la pochette d'album pour un release_id MusicBrainz

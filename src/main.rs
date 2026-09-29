@@ -15,6 +15,7 @@ mod rate_limiter;
 mod retry;
 mod rollback;
 mod scanner;
+mod tag_normalizer;
 mod tags;
 mod title_cleaner;
 
@@ -24,8 +25,8 @@ use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 /// Options de run propagées à chaque worker (évite des signatures à rallonge).
@@ -77,7 +78,11 @@ fn main() -> Result<()> {
     println!("{} {}", "Destination:".bold(), args.target.display());
 
     if !args.source.exists() {
-        eprintln!("{} Le dossier source n'existe pas : {}", "✗".red().bold(), args.source.display());
+        eprintln!(
+            "{} Le dossier source n'existe pas : {}",
+            "✗".red().bold(),
+            args.source.display()
+        );
         std::process::exit(1);
     }
 
@@ -91,7 +96,10 @@ fn main() -> Result<()> {
     };
 
     let files = scanner::scan(&args.source);
-    println!("\n{} fichiers audio trouvés\n", files.len().to_string().bold());
+    println!(
+        "\n{} fichiers audio trouvés\n",
+        files.len().to_string().bold()
+    );
 
     if files.is_empty() {
         println!("Rien à faire.");
@@ -112,7 +120,12 @@ fn main() -> Result<()> {
     let bar = Arc::new(bar);
 
     if args.dry_run {
-        println!("{}", "Mode DRY-RUN : aucun fichier ne sera copié/déplacé.".yellow().bold());
+        println!(
+            "{}",
+            "Mode DRY-RUN : aucun fichier ne sera copié/déplacé."
+                .yellow()
+                .bold()
+        );
     }
 
     // Handler Ctrl-C : bascule le flag partagé. Le cache WAL persiste chaque fichier
@@ -122,7 +135,12 @@ fn main() -> Result<()> {
         let flag = interrupted.clone();
         let _ = ctrlc::set_handler(move || {
             flag.store(true, Ordering::SeqCst);
-            eprintln!("\n{}", "Interruption demandée — arrêt après le fichier en cours…".yellow().bold());
+            eprintln!(
+                "\n{}",
+                "Interruption demandée — arrêt après le fichier en cours…"
+                    .yellow()
+                    .bold()
+            );
         });
     }
 
@@ -161,7 +179,15 @@ fn main() -> Result<()> {
             &bar,
         )
     } else {
-        process_sequential(&files, &enricher, &cache, &args.source, &args.target, &opts, &bar)
+        process_sequential(
+            &files,
+            &enricher,
+            &cache,
+            &args.source,
+            &args.target,
+            &opts,
+            &bar,
+        )
     };
     let elapsed = started.elapsed();
     bar.finish_and_clear();
@@ -172,7 +198,11 @@ fn main() -> Result<()> {
     if args.do_move && !args.dry_run {
         let removed = organizer::cleanup_empty_dirs(&args.source);
         if removed > 0 {
-            println!("  {} {} dossiers source vides nettoyés", "·".dimmed(), removed);
+            println!(
+                "  {} {} dossiers source vides nettoyés",
+                "·".dimmed(),
+                removed
+            );
         }
     }
     Ok(())
@@ -229,7 +259,9 @@ fn process_file(
 ) -> ProcessResult {
     // Interruption (Ctrl-C) : on arrête net sans traiter ni enregistrer.
     if opts.interrupted.load(Ordering::SeqCst) {
-        return ProcessResult::Interrupted { path: file.to_path_buf() };
+        return ProcessResult::Interrupted {
+            path: file.to_path_buf(),
+        };
     }
 
     let filename = file.file_name().unwrap_or_default().to_string_lossy();
@@ -253,7 +285,8 @@ fn process_file(
             };
         }
     };
-    let mtime: Option<i64> = metadata.modified()
+    let mtime: Option<i64> = metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
@@ -263,14 +296,22 @@ fn process_file(
     // Skip total via cache : organized/conflict toujours skip ; unsorted skip seulement
     // pendant unsorted_ttl_days pour laisser une chance que MusicBrainz s'enrichisse.
     if let Some(mt) = mtime {
-        if let Ok(Some((status, dest_opt, last_seen))) = cache.lookup_processed(&source_str, mt, size) {
+        if let Ok(Some((status, dest_opt, last_seen))) =
+            cache.lookup_processed(&source_str, mt, size)
+        {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             let age_secs = now - last_seen;
 
-            if should_skip_cached(&status, age_secs, opts.unsorted_ttl_days, opts.resume, opts.retry_unsorted) {
+            if should_skip_cached(
+                &status,
+                age_secs,
+                opts.unsorted_ttl_days,
+                opts.resume,
+                opts.retry_unsorted,
+            ) {
                 if let Some(d) = dest_opt {
                     let dest_pb = std::path::PathBuf::from(d);
                     if dest_pb.exists() {
@@ -299,16 +340,30 @@ fn process_file(
         match cache_keys::content_hash(file) {
             Ok(h) => {
                 if let Ok(Some(existing)) = cache.lookup_content(&h) {
-                    if std::path::Path::new(&existing).exists() {
-                        bar.println(format!("  {} {} — doublon de {}", "⧉".cyan().bold(), filename, existing));
+                    if is_content_duplicate(&existing, file) {
+                        bar.println(format!(
+                            "  {} {} — doublon de {}",
+                            "⧉".cyan().bold(),
+                            filename,
+                            existing
+                        ));
                         let of = std::path::PathBuf::from(&existing);
                         if opts.do_move {
                             let _ = std::fs::remove_file(file);
                         }
                         if let Some(mt) = mtime {
-                            let _ = cache.record_processed(&source_str, mt, size, Some(&existing), "organized");
+                            let _ = cache.record_processed(
+                                &source_str,
+                                mt,
+                                size,
+                                Some(&existing),
+                                "organized",
+                            );
                         }
-                        return ProcessResult::Duplicate { from: file.to_path_buf(), of };
+                        return ProcessResult::Duplicate {
+                            from: file.to_path_buf(),
+                            of,
+                        };
                     }
                 }
                 Some(h)
@@ -322,21 +377,33 @@ fn process_file(
     // Dédup acoustique : deux fichiers renvoyant le même enregistrement AcoustID
     // (MBID) sont le même morceau, quelle que soit la qualité. On conserve le
     // meilleur bitrate, l'autre part à la corbeille système.
+    // Ancien exemplaire remplacé par le fichier courant (meilleure qualité) :
+    // ses références en base seront redirigées vers la nouvelle destination.
+    let mut replaced_dest: Option<String> = None;
     let acoustic: Option<(String, u32)> = if opts.audio_dedup && !opts.dry_run {
         match enricher.resolve_recording_id(file) {
             Some(recording_id) => {
                 let cur_q = tags::get_bitrate(file).unwrap_or(0);
                 if let Ok(Some((existing, existing_q))) = cache.lookup_acoustic(&recording_id) {
                     let existing_path = std::path::PathBuf::from(&existing);
-                    let same_file =
-                        existing_path.canonicalize().ok() == file.canonicalize().ok();
+                    let same_file = existing_path.canonicalize().ok() == file.canonicalize().ok();
                     if existing_path.exists() && !same_file {
                         if cur_q > existing_q {
-                            // Courant meilleur : l'ancien exemplaire va à la corbeille.
+                            // Courant meilleur : l'ancien exemplaire va à la corbeille,
+                            // et son dossier d'album s'il ne contient plus d'audio.
                             let _ = trash::delete(&existing_path);
+                            if let Some(parent) = existing_path.parent()
+                                && organizer::is_audio_orphan_dir(parent)
+                            {
+                                let _ = trash::delete(parent);
+                            }
+                            replaced_dest = Some(existing.clone());
                             bar.println(format!(
                                 "  {} {} — remplace un doublon acoustique ({}→{}kbps)",
-                                "⧉".cyan().bold(), filename, existing_q, cur_q
+                                "⧉".cyan().bold(),
+                                filename,
+                                existing_q,
+                                cur_q
                             ));
                         } else {
                             // Ancien au moins aussi bon : le courant est le perdant.
@@ -345,10 +412,19 @@ fn process_file(
                             }
                             bar.println(format!(
                                 "  {} {} — doublon acoustique (corbeille, {}≤{}kbps)",
-                                "⧉".cyan().bold(), filename, cur_q, existing_q
+                                "⧉".cyan().bold(),
+                                filename,
+                                cur_q,
+                                existing_q
                             ));
                             if let Some(mt) = mtime {
-                                let _ = cache.record_processed(&source_str, mt, size, Some(&existing), "organized");
+                                let _ = cache.record_processed(
+                                    &source_str,
+                                    mt,
+                                    size,
+                                    Some(&existing),
+                                    "organized",
+                                );
                             }
                             return ProcessResult::AcousticDuplicate {
                                 from: file.to_path_buf(),
@@ -366,9 +442,8 @@ fn process_file(
     };
 
     // Catch des panics éventuels (bugs UTF-8 dans lofty, etc.) pour que le run continue
-    let enrich_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        enricher.enrich(file)
-    }));
+    let enrich_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| enricher.enrich(file)));
 
     let (info, confidence) = match enrich_result {
         Ok(Ok(pair)) => pair,
@@ -377,9 +452,19 @@ fn process_file(
             // on laisse le fichier en source pour re-tentative au prochain run.
             bar.println(format!("  {} {} — {}", "✗".red().bold(), filename, e));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed_note(&source_str, mt, size, None, "error", Some(&e.to_string()));
+                let _ = cache.record_processed_note(
+                    &source_str,
+                    mt,
+                    size,
+                    None,
+                    "error",
+                    Some(&e.to_string()),
+                );
             }
-            return ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() };
+            return ProcessResult::Error {
+                path: file.to_path_buf(),
+                reason: e.to_string(),
+            };
         }
         Err(panic) => {
             let reason = panic
@@ -387,13 +472,30 @@ fn process_file(
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic interne (UTF-8 ?)".into());
-            bar.println(format!("  {} {} — PANIC : {} → _errors/", "✗".red().bold(), filename, reason));
+            bar.println(format!(
+                "  {} {} — PANIC : {} → _errors/",
+                "✗".red().bold(),
+                filename,
+                reason
+            ));
             let quarantined = quarantine_error(file, target, source, opts.do_move);
-            let dest_str = quarantined.as_ref().map(|d| d.to_string_lossy().into_owned());
+            let dest_str = quarantined
+                .as_ref()
+                .map(|d| d.to_string_lossy().into_owned());
             if let Some(mt) = mtime {
-                let _ = cache.record_processed_note(&source_str, mt, size, dest_str.as_deref(), "error", Some(&reason));
+                let _ = cache.record_processed_note(
+                    &source_str,
+                    mt,
+                    size,
+                    dest_str.as_deref(),
+                    "error",
+                    Some(&reason),
+                );
             }
-            return ProcessResult::Error { path: file.to_path_buf(), reason };
+            return ProcessResult::Error {
+                path: file.to_path_buf(),
+                reason,
+            };
         }
     };
 
@@ -404,33 +506,44 @@ fn process_file(
     } else {
         &opts.template
     };
-    let mut dest = organizer::build_destination_path_with_template(
-        target, &info, file, source, template,
-    );
+    let mut dest =
+        organizer::build_destination_path_with_template(target, &info, file, source, template);
 
     // Quarantaine : un match de faible confiance (heuristique seule) part en _review/
     // au lieu de polluer l'arborescence principale. Les _unsorted restent inchangés.
     let is_unsorted_dest = dest.to_string_lossy().contains("_unsorted");
-    if opts.quarantine
-        && confidence == crate::models::Confidence::Low
-        && !is_unsorted_dest
-    {
+    if opts.quarantine && confidence == crate::models::Confidence::Low && !is_unsorted_dest {
         dest = organizer::redirect_to_review(target, &dest);
     }
 
     // En mode --fix-tags, on n'écrase les tags que sur un match sûr (High).
-    let overwrite_tags = opts.fix_tags && confidence == crate::models::Confidence::High;
+    let overwrite_tags = should_overwrite_tags(opts.fix_tags, confidence, info.normalized);
 
     // Mode dry-run : on a tout calculé (y compris l'enrichissement API), mais on
     // n'écrit rien sur le disque et on ne touche pas au cache processed_files.
     if opts.dry_run {
         let is_unsorted = dest.to_string_lossy().contains("_unsorted");
         if is_unsorted {
-            bar.println(format!("  {} {} → _unsorted/", "⚠".yellow().bold(), filename));
-            return ProcessResult::Unsorted { from: file.to_path_buf(), to: dest };
+            bar.println(format!(
+                "  {} {} → _unsorted/",
+                "⚠".yellow().bold(),
+                filename
+            ));
+            return ProcessResult::Unsorted {
+                from: file.to_path_buf(),
+                to: dest,
+            };
         }
-        bar.println(format!("  {} {} → {}", "→".cyan().bold(), filename, dest.display()));
-        return ProcessResult::Organized { from: file.to_path_buf(), to: dest };
+        bar.println(format!(
+            "  {} {} → {}",
+            "→".cyan().bold(),
+            filename,
+            dest.display()
+        ));
+        return ProcessResult::Organized {
+            from: file.to_path_buf(),
+            to: dest,
+        };
     }
 
     // En mode --move : rename(2) atomique sur même FS, sinon copy + delete (cross-FS).
@@ -444,23 +557,47 @@ fn process_file(
     match copy_result {
         Ok(organizer::CopyResult::Copied) => {
             if let Err(e) = tags::write_tags(&dest, &info, overwrite_tags) {
-                bar.println(format!("  {} {} — Copié mais erreur tags : {}", "⚠".yellow().bold(), filename, e));
+                bar.println(format!(
+                    "  {} {} — Copié mais erreur tags : {}",
+                    "⚠".yellow().bold(),
+                    filename,
+                    e
+                ));
             }
 
             let is_unsorted = dest.to_string_lossy().contains("_unsorted");
             if is_unsorted {
-                bar.println(format!("  {} {} → _unsorted/", "⚠".yellow().bold(), filename));
+                bar.println(format!(
+                    "  {} {} → _unsorted/",
+                    "⚠".yellow().bold(),
+                    filename
+                ));
             }
             // Les succès ne s'affichent plus ligne par ligne : la barre + le résumé suffisent.
 
             if is_unsorted {
                 if let Some(mt) = mtime {
-                    let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "unsorted");
+                    let _ = cache.record_processed(
+                        &source_str,
+                        mt,
+                        size,
+                        Some(&dest.to_string_lossy()),
+                        "unsorted",
+                    );
                 }
-                ProcessResult::Unsorted { from: file.to_path_buf(), to: dest }
+                ProcessResult::Unsorted {
+                    from: file.to_path_buf(),
+                    to: dest,
+                }
             } else {
                 if let Some(mt) = mtime {
-                    let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
+                    let _ = cache.record_processed(
+                        &source_str,
+                        mt,
+                        size,
+                        Some(&dest.to_string_lossy()),
+                        "organized",
+                    );
                 }
                 if let Some(h) = &content_hash {
                     let _ = cache.record_content(h, &dest.to_string_lossy());
@@ -468,19 +605,44 @@ fn process_file(
                 if let Some((fp_key, q)) = &acoustic {
                     let _ = cache.upsert_acoustic(fp_key, &dest.to_string_lossy(), *q);
                 }
+                if let Some(old) = &replaced_dest {
+                    let _ = cache.redirect_dest(old, &dest.to_string_lossy());
+                }
+                // Retri sur place : si la source était elle-même une destination
+                // enregistrée (renommage), toutes ses références suivent.
+                if *file != dest {
+                    let _ = cache.redirect_dest(&source_str, &dest.to_string_lossy());
+                }
                 if let (Some(parent), Some(cover)) = (dest.parent(), &info.cover_art) {
                     coverart::write_album_cover(parent, cover);
                 }
-                ProcessResult::Organized { from: file.to_path_buf(), to: dest }
+                ProcessResult::Organized {
+                    from: file.to_path_buf(),
+                    to: dest,
+                }
             }
         }
         Ok(organizer::CopyResult::Replaced { bitrate }) => {
             if let Err(e) = tags::write_tags(&dest, &info, overwrite_tags) {
-                bar.println(format!("  ⚠ Erreur écriture tags après remplacement : {}", e));
+                bar.println(format!(
+                    "  ⚠ Erreur écriture tags après remplacement : {}",
+                    e
+                ));
             }
-            bar.println(format!("  {} {} — remplacé ({}kbps)", "↑".cyan().bold(), filename, bitrate));
+            bar.println(format!(
+                "  {} {} — remplacé ({}kbps)",
+                "↑".cyan().bold(),
+                filename,
+                bitrate
+            ));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "conflict");
+                let _ = cache.record_processed(
+                    &source_str,
+                    mt,
+                    size,
+                    Some(&dest.to_string_lossy()),
+                    "conflict",
+                );
             }
             if let Some(h) = &content_hash {
                 let _ = cache.record_content(h, &dest.to_string_lossy());
@@ -491,14 +653,31 @@ fn process_file(
             if let (Some(parent), Some(cover)) = (dest.parent(), &info.cover_art) {
                 coverart::write_album_cover(parent, cover);
             }
-            ProcessResult::ConflictResolved { path: dest, kept_bitrate: bitrate }
+            ProcessResult::ConflictResolved {
+                path: dest,
+                kept_bitrate: bitrate,
+            }
         }
         Ok(organizer::CopyResult::Skipped { existing_bitrate }) => {
-            bar.println(format!("  {} {} — ignoré (existant : {}kbps)", "—".dimmed(), filename, existing_bitrate));
+            bar.println(format!(
+                "  {} {} — ignoré (existant : {}kbps)",
+                "—".dimmed(),
+                filename,
+                existing_bitrate
+            ));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed(&source_str, mt, size, Some(&dest.to_string_lossy()), "organized");
+                let _ = cache.record_processed(
+                    &source_str,
+                    mt,
+                    size,
+                    Some(&dest.to_string_lossy()),
+                    "organized",
+                );
             }
-            ProcessResult::Organized { from: file.to_path_buf(), to: dest }
+            ProcessResult::Organized {
+                from: file.to_path_buf(),
+                to: dest,
+            }
         }
         Err(e) => {
             // Erreur d'I/O au rangement (nom de destination invalide sur le FS,
@@ -507,13 +686,35 @@ fn process_file(
             // échoue AUSSI (cible read-only, disque plein → vraiment
             // environnemental), on laisse en source pour re-tentative.
             let quarantined = quarantine_error(file, target, source, opts.do_move);
-            let dest_str = quarantined.as_ref().map(|d| d.to_string_lossy().into_owned());
-            let suffix = if quarantined.is_some() { " → _errors/" } else { "" };
-            bar.println(format!("  {} {} — {}{}", "✗".red().bold(), filename, e, suffix));
+            let dest_str = quarantined
+                .as_ref()
+                .map(|d| d.to_string_lossy().into_owned());
+            let suffix = if quarantined.is_some() {
+                " → _errors/"
+            } else {
+                ""
+            };
+            bar.println(format!(
+                "  {} {} — {}{}",
+                "✗".red().bold(),
+                filename,
+                e,
+                suffix
+            ));
             if let Some(mt) = mtime {
-                let _ = cache.record_processed_note(&source_str, mt, size, dest_str.as_deref(), "error", Some(&e.to_string()));
+                let _ = cache.record_processed_note(
+                    &source_str,
+                    mt,
+                    size,
+                    dest_str.as_deref(),
+                    "error",
+                    Some(&e.to_string()),
+                );
             }
-            ProcessResult::Error { path: file.to_path_buf(), reason: e.to_string() }
+            ProcessResult::Error {
+                path: file.to_path_buf(),
+                reason: e.to_string(),
+            }
         }
     }
 }
@@ -526,6 +727,23 @@ fn process_file(
 /// destination existe déjà est une **copie redondante** (issue d'un ancien run en
 /// mode copie) : elle doit partir à la corbeille pour que la source se vide.
 /// (Le hit cache exige source_path+mtime+size identiques → c'est bien le même fichier.)
+/// Un fichier déjà rangé au chemin `existing` est un doublon de `file`, sauf
+/// si c'est le même fichier (retri sur place : `--move` le supprimerait).
+fn is_content_duplicate(existing: &str, file: &std::path::Path) -> bool {
+    let existing_path = std::path::Path::new(existing);
+    existing_path.exists() && existing_path.canonicalize().ok() != file.canonicalize().ok()
+}
+
+/// Réécriture des tags : sur match sûr en `--fix-tags`, ou dès que la
+/// normalisation a corrigé des tags bancals (déterministe, sans API).
+fn should_overwrite_tags(
+    fix_tags: bool,
+    confidence: crate::models::Confidence,
+    normalized: bool,
+) -> bool {
+    (fix_tags && confidence == crate::models::Confidence::High) || normalized
+}
+
 fn should_trash_redundant_source(status: &str, do_move: bool, dest_exists: bool) -> bool {
     do_move && dest_exists && matches!(status, "organized" | "conflict")
 }
@@ -545,7 +763,9 @@ fn quarantine_error(
         return None;
     }
     let dest = organizer::error_destination(target, file, source);
-    organizer::move_to_destination(file, &dest).ok().map(|_| dest)
+    organizer::move_to_destination(file, &dest)
+        .ok()
+        .map(|_| dest)
 }
 
 fn should_skip_cached(
@@ -564,28 +784,96 @@ fn should_skip_cached(
 }
 
 fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
-    let organized = results.iter().filter(|r| matches!(r, ProcessResult::Organized { .. })).count();
-    let cached = results.iter().filter(|r| matches!(r, ProcessResult::CachedSkip { .. })).count();
-    let conflicts = results.iter().filter(|r| matches!(r, ProcessResult::ConflictResolved { .. })).count();
-    let unsorted = results.iter().filter(|r| matches!(r, ProcessResult::Unsorted { .. })).count();
-    let duplicates = results.iter().filter(|r| matches!(r, ProcessResult::Duplicate { .. })).count();
-    let acoustic_dups = results.iter().filter(|r| matches!(r, ProcessResult::AcousticDuplicate { .. })).count();
-    let interrupted = results.iter().filter(|r| matches!(r, ProcessResult::Interrupted { .. })).count();
-    let errors = results.iter().filter(|r| matches!(r, ProcessResult::Error { .. })).count();
+    let organized = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::Organized { .. }))
+        .count();
+    let cached = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::CachedSkip { .. }))
+        .count();
+    let conflicts = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::ConflictResolved { .. }))
+        .count();
+    let unsorted = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::Unsorted { .. }))
+        .count();
+    let duplicates = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::Duplicate { .. }))
+        .count();
+    let acoustic_dups = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::AcousticDuplicate { .. }))
+        .count();
+    let interrupted = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::Interrupted { .. }))
+        .count();
+    let errors = results
+        .iter()
+        .filter(|r| matches!(r, ProcessResult::Error { .. }))
+        .count();
 
     let total = results.len();
     let secs = elapsed.as_secs_f64().max(0.001);
     let throughput = total as f64 / secs;
 
     println!("\n{}", "Traitement terminé :".bold());
-    if organized > 0 { println!("  {} {} fichiers organisés", "✓".green().bold(), organized); }
-    if cached > 0    { println!("  {} {} ignorés depuis le cache (instantané)", "—".dimmed(), cached); }
-    if conflicts > 0 { println!("  {} {} conflits résolus (meilleur bitrate conservé)", "↑".cyan().bold(), conflicts); }
-    if unsorted > 0  { println!("  {} {} fichiers non identifiés → _unsorted/", "⚠".yellow().bold(), unsorted); }
-    if duplicates > 0 { println!("  {} {} doublons de contenu ignorés", "⧉".cyan().bold(), duplicates); }
-    if acoustic_dups > 0 { println!("  {} {} doublons acoustiques → corbeille (meilleure qualité conservée)", "⧉".cyan().bold(), acoustic_dups); }
-    if interrupted > 0 { println!("  {} {} non traités (interruption)", "⏹".yellow().bold(), interrupted); }
-    if errors > 0    { println!("  {} {} erreurs → _errors/ (ou source si cible non inscriptible)", "✗".red().bold(), errors); }
+    if organized > 0 {
+        println!("  {} {} fichiers organisés", "✓".green().bold(), organized);
+    }
+    if cached > 0 {
+        println!(
+            "  {} {} ignorés depuis le cache (instantané)",
+            "—".dimmed(),
+            cached
+        );
+    }
+    if conflicts > 0 {
+        println!(
+            "  {} {} conflits résolus (meilleur bitrate conservé)",
+            "↑".cyan().bold(),
+            conflicts
+        );
+    }
+    if unsorted > 0 {
+        println!(
+            "  {} {} fichiers non identifiés → _unsorted/",
+            "⚠".yellow().bold(),
+            unsorted
+        );
+    }
+    if duplicates > 0 {
+        println!(
+            "  {} {} doublons de contenu ignorés",
+            "⧉".cyan().bold(),
+            duplicates
+        );
+    }
+    if acoustic_dups > 0 {
+        println!(
+            "  {} {} doublons acoustiques → corbeille (meilleure qualité conservée)",
+            "⧉".cyan().bold(),
+            acoustic_dups
+        );
+    }
+    if interrupted > 0 {
+        println!(
+            "  {} {} non traités (interruption)",
+            "⏹".yellow().bold(),
+            interrupted
+        );
+    }
+    if errors > 0 {
+        println!(
+            "  {} {} erreurs → _errors/ (ou source si cible non inscriptible)",
+            "✗".red().bold(),
+            errors
+        );
+    }
     println!(
         "  {} en {:.1}s ({:.1} fichiers/s)",
         "⏱".dimmed(),
@@ -596,7 +884,10 @@ fn print_summary(results: &[ProcessResult], elapsed: std::time::Duration) {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_skip_cached, should_trash_redundant_source};
+    use super::{
+        is_content_duplicate, should_overwrite_tags, should_skip_cached,
+        should_trash_redundant_source,
+    };
 
     #[test]
     fn test_trash_redundant_source_decision() {
@@ -613,8 +904,20 @@ mod tests {
 
     #[test]
     fn test_skip_organized_always() {
-        assert!(should_skip_cached("organized", 999_999_999, 30, false, false));
-        assert!(should_skip_cached("conflict", 999_999_999, 30, false, false));
+        assert!(should_skip_cached(
+            "organized",
+            999_999_999,
+            30,
+            false,
+            false
+        ));
+        assert!(should_skip_cached(
+            "conflict",
+            999_999_999,
+            30,
+            false,
+            false
+        ));
     }
 
     #[test]
@@ -626,7 +929,13 @@ mod tests {
     #[test]
     fn test_no_skip_unsorted_past_ttl() {
         // 40 jours > 30 jours → on retente
-        assert!(!should_skip_cached("unsorted", 40 * 86400, 30, false, false));
+        assert!(!should_skip_cached(
+            "unsorted",
+            40 * 86400,
+            30,
+            false,
+            false
+        ));
     }
 
     #[test]
@@ -646,5 +955,32 @@ mod tests {
     fn test_no_skip_error() {
         assert!(!should_skip_cached("error", 0, 30, false, false));
         assert!(!should_skip_cached("error", 0, 30, true, false));
+    }
+
+    /// Retri sur place : un fichier n'est jamais « doublon de contenu » de
+    /// lui-même (sinon `--move` le supprimerait).
+    #[test]
+    fn test_is_content_duplicate_ignores_self() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = dir.path().join("a.mp3");
+        std::fs::write(&me, b"x").unwrap();
+        let other = dir.path().join("b.mp3");
+        std::fs::write(&other, b"x").unwrap();
+        let gone = dir.path().join("gone.mp3");
+
+        assert!(!is_content_duplicate(me.to_str().unwrap(), &me));
+        assert!(is_content_duplicate(other.to_str().unwrap(), &me));
+        assert!(!is_content_duplicate(gone.to_str().unwrap(), &me));
+    }
+
+    /// Les tags sont réécrits sur match sûr en --fix-tags, ou dès que la
+    /// normalisation a corrigé les tags du fichier (déterministe, sans API).
+    #[test]
+    fn test_should_overwrite_tags() {
+        use crate::models::Confidence;
+        assert!(should_overwrite_tags(true, Confidence::High, false));
+        assert!(!should_overwrite_tags(true, Confidence::Medium, false));
+        assert!(!should_overwrite_tags(false, Confidence::High, false));
+        assert!(should_overwrite_tags(false, Confidence::Low, true));
     }
 }

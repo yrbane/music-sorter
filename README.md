@@ -17,7 +17,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/)
 [![Build](https://img.shields.io/badge/build-cargo-green?logo=rust)](https://doc.rust-lang.org/cargo/)
-[![Version](https://img.shields.io/badge/version-0.1.0-lightgrey)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-lightgrey)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-à%20définir-red)](#-licence)
 
 *Un binaire, zéro base de données externe, une bibliothèque impeccablement organisée.*
@@ -82,8 +82,12 @@ Le traitement est **parallélisé** ([rayon](https://github.com/rayon-rs/rayon))
 | ⏯️ | **Reprise & Ctrl-C propre** | Interruption sûre + `--resume` |
 | 🧪 | **Mode simulation** | `--dry-run` : rien n'est touché, rapport des destinations prévues |
 | 🍎 | **Robuste** | Ignore les fichiers AppleDouble (`._foo.mp3`), insensible à la casse des extensions |
+| 🧹 | **Tags assainis** | Extension collée au titre, artiste caché dans le titre d'une compilation, album préfixé du catalogue, groupes répétés : corrigés avant rangement |
+| 💿 | **Compilations fiables** | Décidées par l'album (crédit `Various Artists`, album-artist multi-crédité), jamais par une piste isolée |
 
-**Formats audio supportés :** `mp3`, `flac`, `ogg`, `m4a`, `aac`, `opus`, `wma`.
+**Formats audio supportés :** `mp3`, `flac`, `wav`, `ogg`, `m4a`, `aac`, `opus`, `wma`.
+
+Les dossiers de service `_unsorted/`, `_review/` et `_errors/` ne sont jamais rescannés : un tri **sur place** (source = destination) est sûr.
 
 ---
 
@@ -348,6 +352,7 @@ Projet Rust modulaire (~4 900 lignes) :
 | `cache.rs` | Couche SQLite (rusqlite) |
 | `rollback.rs` | Listing & annulation |
 | `title_cleaner.rs` | Nettoyage des titres pour améliorer le taux de match |
+| `tag_normalizer.rs` | Assainissement des tags avant rangement (extension dans le titre, artiste caché, préfixe catalogue…) |
 | `rate_limiter.rs` / `retry.rs` | Respect des quotas API + retries |
 | `models.rs` | `TrackInfo`, `Confidence`, `ProcessResult` |
 

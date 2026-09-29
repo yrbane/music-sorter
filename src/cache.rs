@@ -144,9 +144,8 @@ impl Cache {
     /// Retourne la destination déjà enregistrée pour un hash de contenu, si connue.
     pub fn lookup_content(&self, content_hash: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT dest_path FROM content_index WHERE content_hash = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT dest_path FROM content_index WHERE content_hash = ?1")?;
         let mut rows = stmt.query(rusqlite::params![content_hash])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -159,7 +158,8 @@ impl Cache {
     /// (INSERT OR IGNORE) : les doublons ultérieurs pointent vers l'original.
     pub fn record_content(&self, content_hash: &str, dest_path: &str) -> Result<()> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO content_index (content_hash, dest_path, recorded_at)
@@ -172,7 +172,7 @@ impl Cache {
     pub fn lookup_fingerprint(&self, content_hash: &str) -> Result<Option<(String, i64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT chromaprint, duration FROM fingerprint_cache WHERE content_hash = ?1"
+            "SELECT chromaprint, duration FROM fingerprint_cache WHERE content_hash = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![content_hash])?;
         if let Some(row) = rows.next()? {
@@ -184,7 +184,8 @@ impl Cache {
 
     pub fn record_fingerprint(&self, content_hash: &str, fp: &str, duration: i64) -> Result<()> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO fingerprint_cache (content_hash, chromaprint, duration, created_at)
@@ -196,12 +197,13 @@ impl Cache {
 
     pub fn lookup_api(&self, endpoint: &str, key: &str, ttl_secs: i64) -> Result<Option<String>> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let cutoff = now - ttl_secs;
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT response FROM api_cache
-             WHERE endpoint = ?1 AND cache_key = ?2 AND fetched_at >= ?3"
+             WHERE endpoint = ?1 AND cache_key = ?2 AND fetched_at >= ?3",
         )?;
         let mut rows = stmt.query(rusqlite::params![endpoint, key, cutoff])?;
         if let Some(row) = rows.next()? {
@@ -213,7 +215,8 @@ impl Cache {
 
     pub fn record_api(&self, endpoint: &str, key: &str, response: &str) -> Result<()> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO api_cache (endpoint, cache_key, response, fetched_at)
@@ -225,9 +228,7 @@ impl Cache {
 
     pub fn lookup_cover(&self, release_id: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT image FROM cover_cache WHERE release_id = ?1"
-        )?;
+        let mut stmt = conn.prepare("SELECT image FROM cover_cache WHERE release_id = ?1")?;
         let mut rows = stmt.query(rusqlite::params![release_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -236,12 +237,20 @@ impl Cache {
         }
     }
 
+    /// Clé de registre artiste : minuscules, article anglais initial ignoré
+    /// (« The Future Sound of London » ≡ « Future Sound of London »).
+    fn artist_key(name: &str) -> String {
+        let lower = name.trim().to_lowercase();
+        match lower.strip_prefix("the ") {
+            Some(rest) if !rest.trim().is_empty() => rest.trim_start().to_string(),
+            _ => lower,
+        }
+    }
+
     pub fn lookup_artist(&self, name: &str) -> Result<Option<String>> {
-        let key = name.to_lowercase();
+        let key = Self::artist_key(name);
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT canonical FROM artists WHERE canonical_lower = ?1"
-        )?;
+        let mut stmt = conn.prepare("SELECT canonical FROM artists WHERE canonical_lower = ?1")?;
         let mut rows = stmt.query(rusqlite::params![key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -251,12 +260,25 @@ impl Cache {
     }
 
     pub fn record_artist(&self, canonical: &str, mbid: Option<&str>) -> Result<()> {
-        let key = canonical.to_lowercase();
+        let key = Self::artist_key(canonical);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO artists (canonical_lower, canonical, mbid) VALUES (?1, ?2, ?3)",
             rusqlite::params![key, canonical, mbid],
         )?;
+        Ok(())
+    }
+
+    /// Redirige toutes les références à un fichier rangé vers son remplaçant
+    /// (dédup acoustique : l'ancien exemplaire est parti à la corbeille).
+    pub fn redirect_dest(&self, old_dest: &str, new_dest: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for table in ["processed_files", "content_index", "acoustic_index"] {
+            conn.execute(
+                &format!("UPDATE {table} SET dest_path = ?2 WHERE dest_path = ?1"),
+                rusqlite::params![old_dest, new_dest],
+            )?;
+        }
         Ok(())
     }
 
@@ -327,7 +349,8 @@ impl Cache {
 
     pub fn record_cover(&self, release_id: &str, image: &[u8]) -> Result<()> {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO cover_cache (release_id, image, fetched_at) VALUES (?1, ?2, ?3)",
@@ -343,7 +366,9 @@ impl Cache {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
         Self::init_schema(&conn)?;
-        Ok(Self { conn: std::sync::Mutex::new(conn) })
+        Ok(Self {
+            conn: std::sync::Mutex::new(conn),
+        })
     }
 
     pub fn open(target: &Path) -> Result<Self> {
@@ -354,11 +379,27 @@ impl Cache {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
         Self::init_schema(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Self::migrate_artist_keys(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Migration : les clés d'artistes enregistrées avec l'article initial par
+    /// une version antérieure (« the x ») rejoignent la clé sans article.
+    /// `OR IGNORE` conserve la ligne existante en cas de collision.
+    fn migrate_artist_keys(conn: &Connection) -> Result<()> {
+        conn.execute(
+            "UPDATE OR IGNORE artists SET canonical_lower = ltrim(substr(canonical_lower, 5))
+             WHERE canonical_lower LIKE 'the %' AND length(canonical_lower) > 4",
+            [],
+        )?;
+        Ok(())
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS processed_files (
                 source_path TEXT PRIMARY KEY,
                 mtime       INTEGER NOT NULL,
@@ -407,7 +448,8 @@ impl Cache {
                 year  INTEGER             -- année canonique = la plus ancienne
             );
             CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_files(status);
-        "#)?;
+        "#,
+        )?;
         // Migration : ajoute la colonne note aux bases créées avant son introduction.
         // L'erreur « duplicate column name » est ignorée (colonne déjà présente).
         let _ = conn.execute("ALTER TABLE processed_files ADD COLUMN note TEXT", []);
@@ -488,8 +530,15 @@ mod tests {
     fn test_api_cache_miss_then_hit_with_ttl() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        assert!(cache.lookup_api("musicbrainz", "key1", 86400).unwrap().is_none());
-        cache.record_api("musicbrainz", "key1", "{\"a\":1}").unwrap();
+        assert!(
+            cache
+                .lookup_api("musicbrainz", "key1", 86400)
+                .unwrap()
+                .is_none()
+        );
+        cache
+            .record_api("musicbrainz", "key1", "{\"a\":1}")
+            .unwrap();
         let r = cache.lookup_api("musicbrainz", "key1", 86400).unwrap();
         assert_eq!(r, Some("{\"a\":1}".into()));
     }
@@ -500,16 +549,19 @@ mod tests {
         let cache = Cache::open(dir.path()).unwrap();
         assert!(cache.lookup_cover("rid").unwrap().is_none());
         cache.record_cover("rid", &[1, 2, 3, 4]).unwrap();
-        assert_eq!(cache.lookup_cover("rid").unwrap(), Some(vec![1,2,3,4]));
+        assert_eq!(cache.lookup_cover("rid").unwrap(), Some(vec![1, 2, 3, 4]));
     }
 
     #[test]
     fn test_api_cache_expires() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.conn.lock().unwrap().execute(
-            "INSERT INTO api_cache VALUES ('mb', 'k', '{}', 0)", [],
-        ).unwrap();
+        cache
+            .conn
+            .lock()
+            .unwrap()
+            .execute("INSERT INTO api_cache VALUES ('mb', 'k', '{}', 0)", [])
+            .unwrap();
         let r = cache.lookup_api("mb", "k", 86400).unwrap();
         assert!(r.is_none(), "entrée datée de 1970 doit être expirée");
     }
@@ -517,7 +569,9 @@ mod tests {
     #[test]
     fn test_open_in_memory_creates_schema() {
         let cache = Cache::open_in_memory().unwrap();
-        cache.record_processed("/foo", 1, 2, Some("/dest"), "organized").unwrap();
+        cache
+            .record_processed("/foo", 1, 2, Some("/dest"), "organized")
+            .unwrap();
         let r = cache.lookup_processed("/foo", 1, 2).unwrap();
         assert!(r.is_some());
         let (status, dest, _last_seen) = r.unwrap();
@@ -529,7 +583,9 @@ mod tests {
     fn test_acoustic_upsert_and_lookup() {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.upsert_acoustic("fpkey1", "/music/A/track.flac", 900).unwrap();
+        cache
+            .upsert_acoustic("fpkey1", "/music/A/track.flac", 900)
+            .unwrap();
         let got = cache.lookup_acoustic("fpkey1").unwrap();
         assert_eq!(got, Some(("/music/A/track.flac".to_string(), 900)));
         assert_eq!(cache.lookup_acoustic("absent").unwrap(), None);
@@ -541,7 +597,9 @@ mod tests {
         let cache = Cache::open(dir.path()).unwrap();
         cache.upsert_acoustic("k", "/music/lowbr.mp3", 128).unwrap();
         // Un meilleur exemplaire remplace l'entrée.
-        cache.upsert_acoustic("k", "/music/hifi.flac", 1000).unwrap();
+        cache
+            .upsert_acoustic("k", "/music/hifi.flac", 1000)
+            .unwrap();
         assert_eq!(
             cache.lookup_acoustic("k").unwrap(),
             Some(("/music/hifi.flac".to_string(), 1000))
@@ -552,7 +610,9 @@ mod tests {
     fn test_album_upsert_and_lookup() {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.upsert_album("Boards of Canada", "Geogaddi", Some(2002)).unwrap();
+        cache
+            .upsert_album("Boards of Canada", "Geogaddi", Some(2002))
+            .unwrap();
         let got = cache.lookup_album("boards of canada", "geogaddi").unwrap();
         assert_eq!(got, Some(("Geogaddi".to_string(), Some(2002))));
     }
@@ -604,9 +664,15 @@ mod tests {
     fn test_list_all_processed_returns_entries_with_dest() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized").unwrap();
-        cache.record_processed("/b.mp3", 2, 200, Some("/dst/b.mp3"), "conflict").unwrap();
-        cache.record_processed("/c.mp3", 3, 300, None, "error").unwrap();
+        cache
+            .record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized")
+            .unwrap();
+        cache
+            .record_processed("/b.mp3", 2, 200, Some("/dst/b.mp3"), "conflict")
+            .unwrap();
+        cache
+            .record_processed("/c.mp3", 3, 300, None, "error")
+            .unwrap();
 
         let entries = cache.list_all_processed().unwrap();
         assert_eq!(entries.len(), 2);
@@ -635,21 +701,32 @@ mod tests {
         let cache = Cache::open(dir.path()).unwrap();
         cache.record_content("h", "/dst/first.mp3").unwrap();
         cache.record_content("h", "/dst/second.mp3").unwrap();
-        assert_eq!(cache.lookup_content("h").unwrap(), Some("/dst/first.mp3".into()));
+        assert_eq!(
+            cache.lookup_content("h").unwrap(),
+            Some("/dst/first.mp3".into())
+        );
     }
 
     #[test]
     fn test_list_unsorted_returns_unsorted_and_errors_with_note() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.record_processed("/ok.mp3", 1, 1, Some("/dst/ok.mp3"), "organized").unwrap();
-        cache.record_processed("/u.mp3", 2, 2, Some("/dst/_unsorted/u.mp3"), "unsorted").unwrap();
-        cache.record_processed_note("/e.mp3", 3, 3, None, "error", Some("panic UTF-8")).unwrap();
+        cache
+            .record_processed("/ok.mp3", 1, 1, Some("/dst/ok.mp3"), "organized")
+            .unwrap();
+        cache
+            .record_processed("/u.mp3", 2, 2, Some("/dst/_unsorted/u.mp3"), "unsorted")
+            .unwrap();
+        cache
+            .record_processed_note("/e.mp3", 3, 3, None, "error", Some("panic UTF-8"))
+            .unwrap();
 
         let entries = cache.list_unsorted().unwrap();
         assert_eq!(entries.len(), 2, "organized exclu");
-        let by_src: std::collections::HashMap<_, _> =
-            entries.iter().map(|e| (e.source_path.as_str(), e)).collect();
+        let by_src: std::collections::HashMap<_, _> = entries
+            .iter()
+            .map(|e| (e.source_path.as_str(), e))
+            .collect();
         assert_eq!(by_src["/u.mp3"].status, "unsorted");
         assert_eq!(by_src["/e.mp3"].status, "error");
         assert_eq!(by_src["/e.mp3"].note.as_deref(), Some("panic UTF-8"));
@@ -659,9 +736,65 @@ mod tests {
     fn test_delete_processed_removes_entry() {
         let dir = tempdir().unwrap();
         let cache = Cache::open(dir.path()).unwrap();
-        cache.record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized").unwrap();
+        cache
+            .record_processed("/a.mp3", 1, 100, Some("/dst/a.mp3"), "organized")
+            .unwrap();
         assert_eq!(cache.list_all_processed().unwrap().len(), 1);
         cache.delete_processed("/a.mp3").unwrap();
         assert_eq!(cache.list_all_processed().unwrap().len(), 0);
+    }
+
+    /// Quand un fichier rangé est remplacé (dédup acoustique), toutes les
+    /// références à son ancien chemin doivent pointer vers le remplaçant.
+    #[test]
+    fn test_redirect_dest_updates_all_indexes() {
+        let dir = tempdir().unwrap();
+        let cache = Cache::open(dir.path()).unwrap();
+        cache
+            .record_processed("/src/a.mp3", 1, 10, Some("/lib/old.mp3"), "organized")
+            .unwrap();
+        cache.record_content("hash-a", "/lib/old.mp3").unwrap();
+        cache.upsert_acoustic("rec-a", "/lib/old.mp3", 320).unwrap();
+
+        cache
+            .redirect_dest("/lib/old.mp3", "/lib/new.flac")
+            .unwrap();
+
+        let (_, dest, _) = cache
+            .lookup_processed("/src/a.mp3", 1, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dest.as_deref(), Some("/lib/new.flac"));
+        assert_eq!(
+            cache.lookup_content("hash-a").unwrap().as_deref(),
+            Some("/lib/new.flac")
+        );
+        let (p, q) = cache.lookup_acoustic("rec-a").unwrap().unwrap();
+        assert_eq!(p, "/lib/new.flac");
+        assert_eq!(q, 320);
+    }
+
+    /// Les clés d'artistes enregistrées avec l'article (« the … ») par une
+    /// version antérieure sont migrées à l'ouverture.
+    #[test]
+    fn test_open_migrates_artist_keys_without_article() {
+        let dir = tempdir().unwrap();
+        {
+            let cache = Cache::open(dir.path()).unwrap();
+            let conn = cache.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO artists (canonical_lower, canonical) VALUES ('the future sound of london', 'The Future Sound of London')",
+                [],
+            )
+            .unwrap();
+        }
+        let cache = Cache::open(dir.path()).unwrap();
+        assert_eq!(
+            cache
+                .lookup_artist("Future Sound of London")
+                .unwrap()
+                .as_deref(),
+            Some("The Future Sound of London")
+        );
     }
 }

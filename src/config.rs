@@ -10,15 +10,15 @@ pub struct Config {
     pub target: Option<String>,
     pub workers: Option<usize>,
     pub r#move: Option<bool>,
-    pub cache_enabled: Option<bool>,         // défaut true
-    pub api_cache_ttl_days: Option<u32>,     // défaut 30
-    pub naming_template: Option<String>,     // défaut organizer::DEFAULT_TEMPLATE
+    pub cache_enabled: Option<bool>,          // défaut true
+    pub api_cache_ttl_days: Option<u32>,      // défaut 30
+    pub naming_template: Option<String>,      // défaut organizer::DEFAULT_TEMPLATE
     pub compilation_template: Option<String>, // défaut organizer::COMPILATION_TEMPLATE
-    pub unsorted_ttl_days: Option<i64>,      // défaut 30 — re-tente _unsorted après ce délai
-    pub quarantine_enabled: Option<bool>,    // défaut true — route les matchs faibles vers _review/
-    pub dedup_enabled: Option<bool>,         // défaut true — détecte les doublons par hash de contenu
-    pub audio_dedup: Option<bool>,           // défaut true — dédup acoustique (empreinte+durée → corbeille)
-    pub fix_tags: Option<bool>,              // défaut false — réécrit les tags canoniques sur match sûr
+    pub unsorted_ttl_days: Option<i64>,       // défaut 30 — re-tente _unsorted après ce délai
+    pub quarantine_enabled: Option<bool>, // défaut true — route les matchs faibles vers _review/
+    pub dedup_enabled: Option<bool>,      // défaut true — détecte les doublons par hash de contenu
+    pub audio_dedup: Option<bool>, // défaut true — dédup acoustique (empreinte+durée → corbeille)
+    pub fix_tags: Option<bool>,    // défaut false — réécrit les tags canoniques sur match sûr
 }
 
 impl Config {

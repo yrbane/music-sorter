@@ -9,6 +9,13 @@ pub fn is_various_artists(name: &str) -> bool {
     )
 }
 
+/// Un album-artist désigne une compilation s'il est « Various Artists » ou s'il
+/// crédite plusieurs artistes (« A / B / C », « A; B »). « AC/DC » (sans
+/// espaces) et « Simon & Garfunkel » restent des artistes uniques.
+pub fn is_compilation_album_artist(name: &str) -> bool {
+    is_various_artists(name) || name.contains(" / ") || name.contains(';')
+}
+
 /// Informations sur une piste audio
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TrackInfo {
@@ -24,6 +31,9 @@ pub struct TrackInfo {
     pub album_artist: Option<String>,
     /// Vrai si l'album est une compilation (Various Artists).
     pub is_compilation: bool,
+    /// Vrai si `tag_normalizer` a corrigé des tags bancals du fichier : ils
+    /// seront réécrits même sans `--fix-tags` (correction déterministe, sans API).
+    pub normalized: bool,
 }
 
 /// Niveau de confiance d'un enrichissement, pour router les matchs faibles.
@@ -41,23 +51,45 @@ pub enum Confidence {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum ProcessResult {
-    Organized { from: std::path::PathBuf, to: std::path::PathBuf },
+    Organized {
+        from: std::path::PathBuf,
+        to: std::path::PathBuf,
+    },
     /// Skip total via le cache : aucun appel API, aucune copie
-    CachedSkip { from: std::path::PathBuf, to: std::path::PathBuf },
-    ConflictResolved { path: std::path::PathBuf, kept_bitrate: u32 },
-    Unsorted { from: std::path::PathBuf, to: std::path::PathBuf },
+    CachedSkip {
+        from: std::path::PathBuf,
+        to: std::path::PathBuf,
+    },
+    ConflictResolved {
+        path: std::path::PathBuf,
+        kept_bitrate: u32,
+    },
+    Unsorted {
+        from: std::path::PathBuf,
+        to: std::path::PathBuf,
+    },
     /// Doublon de contenu : un fichier au contenu identique a déjà été rangé.
-    Duplicate { from: std::path::PathBuf, of: std::path::PathBuf },
+    Duplicate {
+        from: std::path::PathBuf,
+        of: std::path::PathBuf,
+    },
     /// Doublon acoustique : même enregistrement (empreinte+durée) déjà rangé en
     /// meilleure qualité. Le fichier courant est envoyé à la corbeille.
-    AcousticDuplicate { from: std::path::PathBuf, of: std::path::PathBuf },
+    AcousticDuplicate {
+        from: std::path::PathBuf,
+        of: std::path::PathBuf,
+    },
     /// Traitement abandonné suite à une interruption (Ctrl-C) : non traité, non enregistré.
     Interrupted { path: std::path::PathBuf },
-    Error { path: std::path::PathBuf, reason: String },
+    Error {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }
 
 /// Extensions audio supportées
-pub const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "m4a", "aac", "opus", "wma"];
+pub const SUPPORTED_EXTENSIONS: &[&str] =
+    &["mp3", "flac", "ogg", "m4a", "aac", "opus", "wma", "wav"];
 
 impl TrackInfo {
     /// Fusionne les champs manquants de self avec ceux de other
@@ -89,7 +121,15 @@ impl TrackInfo {
         if self.album_artist.is_none() {
             self.album_artist.clone_from(&other.album_artist);
         }
-        self.is_compilation = self.is_compilation || other.is_compilation;
+        // Un album-artist local explicite (non compilation) fait foi : le flag
+        // compilation d'une DB externe ne doit pas éclater un album mono-artiste.
+        let local_album_artist_is_solo = self
+            .album_artist
+            .as_deref()
+            .is_some_and(|a| !is_compilation_album_artist(a));
+        if !local_album_artist_is_solo {
+            self.is_compilation = self.is_compilation || other.is_compilation;
+        }
     }
 
     /// Vérifie si on a assez d'info pour chercher dans les APIs
@@ -99,8 +139,12 @@ impl TrackInfo {
 
     /// Vérifie si tous les champs essentiels + la pochette sont présents
     pub fn has_full_metadata(&self) -> bool {
-        self.artist.is_some() && self.album.is_some() && self.title.is_some()
-            && self.year.is_some() && self.track_number.is_some() && self.cover_art.is_some()
+        self.artist.is_some()
+            && self.album.is_some()
+            && self.title.is_some()
+            && self.year.is_some()
+            && self.track_number.is_some()
+            && self.cover_art.is_some()
     }
 
     /// Vérifie si on a assez d'info pour organiser le fichier
@@ -210,5 +254,50 @@ mod tests {
             ..Default::default()
         };
         assert!(enough.has_minimum_for_organization());
+    }
+
+    /// Un album-artist multi-crédité (« A / B / C ») est une compilation.
+    #[test]
+    fn test_is_compilation_album_artist_multi_credit() {
+        assert!(is_compilation_album_artist("Various Artists"));
+        assert!(is_compilation_album_artist("Heogen / MⒶ / Inkipak"));
+        assert!(is_compilation_album_artist("A; B"));
+        assert!(!is_compilation_album_artist("AC/DC"));
+        assert!(!is_compilation_album_artist("Simon & Garfunkel"));
+        assert!(!is_compilation_album_artist("Rival Consoles"));
+    }
+
+    /// Un album-artist local non-VA prime sur le flag compilation d'une DB.
+    #[test]
+    fn test_merge_keeps_local_album_artist_over_db_compilation_flag() {
+        let mut base = TrackInfo {
+            album_artist: Some("Rival Consoles".into()),
+            ..Default::default()
+        };
+        let other = TrackInfo {
+            album_artist: Some("Various Artists".into()),
+            is_compilation: true,
+            ..Default::default()
+        };
+        base.merge(&other);
+        assert!(!base.is_compilation);
+        assert_eq!(base.album_artist.as_deref(), Some("Rival Consoles"));
+    }
+
+    /// Sans album-artist local, le flag compilation de la DB est adopté.
+    #[test]
+    fn test_merge_adopts_compilation_flag_without_local_album_artist() {
+        let mut base = TrackInfo::default();
+        let other = TrackInfo {
+            is_compilation: true,
+            ..Default::default()
+        };
+        base.merge(&other);
+        assert!(base.is_compilation);
+    }
+
+    #[test]
+    fn test_wav_is_supported() {
+        assert!(SUPPORTED_EXTENSIONS.contains(&"wav"));
     }
 }

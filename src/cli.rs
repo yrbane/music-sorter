@@ -118,10 +118,7 @@ impl Args {
             .or_else(|| config.target.clone())
             .unwrap_or_else(default_target);
 
-        let workers = self
-            .workers
-            .or(config.workers)
-            .unwrap_or(1);
+        let workers = self.workers.or(config.workers).unwrap_or(1);
 
         let do_move = if self.r#move {
             true

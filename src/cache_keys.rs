@@ -11,7 +11,9 @@ pub fn content_hash(path: &Path) -> Result<String> {
     let mut buf = [0u8; 8192];
     loop {
         let n = file.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     Ok(hex::encode(hasher.finalize()))
@@ -19,7 +21,10 @@ pub fn content_hash(path: &Path) -> Result<String> {
 
 /// Normalise une chaîne pour servir de clé de cache API
 pub fn api_key(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[cfg(test)]
@@ -44,7 +49,10 @@ mod tests {
         a.write_all(b"foo").unwrap();
         let mut b = NamedTempFile::new().unwrap();
         b.write_all(b"bar").unwrap();
-        assert_ne!(content_hash(a.path()).unwrap(), content_hash(b.path()).unwrap());
+        assert_ne!(
+            content_hash(a.path()).unwrap(),
+            content_hash(b.path()).unwrap()
+        );
     }
 
     #[test]

@@ -23,8 +23,12 @@ fn test_empty_source_directory() {
 
     let output = Command::new("cargo")
         .args([
-            "run", "--", "--source", dir.path().to_str().unwrap(),
-            "--target", target.path().to_str().unwrap(),
+            "run",
+            "--",
+            "--source",
+            dir.path().to_str().unwrap(),
+            "--target",
+            target.path().to_str().unwrap(),
         ])
         .output()
         .expect("Impossible de lancer music-sorter");
@@ -37,7 +41,12 @@ fn test_empty_source_directory() {
 #[test]
 fn test_nonexistent_source() {
     let output = Command::new("cargo")
-        .args(["run", "--", "--source", "/tmp/nonexistent_music_sorter_test_xyz"])
+        .args([
+            "run",
+            "--",
+            "--source",
+            "/tmp/nonexistent_music_sorter_test_xyz",
+        ])
         .output()
         .expect("Impossible de lancer music-sorter");
 

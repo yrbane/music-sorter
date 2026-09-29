@@ -2,16 +2,27 @@ use crate::models::SUPPORTED_EXTENSIONS;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+/// Dossiers de service produits par le tri : jamais rescannés comme source
+/// (sinon un tri sur place recopie `_unsorted/` dans `_unsorted/_unsorted/`).
+const SPECIAL_DIRS: &[&str] = &["_unsorted", "_review", "_errors"];
+
 /// Scanne récursivement un dossier et retourne les fichiers audio supportés
 pub fn scan(source: &Path) -> Vec<PathBuf> {
     WalkDir::new(source)
         .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !(e.file_type().is_dir() && is_special_dir(e.path())))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| !is_apple_double(e.path()))
         .filter(|e| is_supported_audio(e.path()))
         .map(|e| e.into_path())
         .collect()
+}
+
+fn is_special_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| SPECIAL_DIRS.contains(&name))
 }
 
 fn is_supported_audio(path: &Path) -> bool {
@@ -65,8 +76,8 @@ mod tests {
         for ext in SUPPORTED_EXTENSIONS {
             fs::write(dir.path().join(format!("file.{}", ext)), b"fake").unwrap();
         }
-        // Fichier WAV ne doit pas être détecté
-        fs::write(dir.path().join("file.wav"), b"fake").unwrap();
+        // Fichier non audio ne doit pas être détecté
+        fs::write(dir.path().join("file.aiff"), b"fake").unwrap();
 
         let files = scan(dir.path());
         assert_eq!(files.len(), SUPPORTED_EXTENSIONS.len());
@@ -103,5 +114,24 @@ mod tests {
             let name = f.file_name().unwrap().to_str().unwrap();
             assert!(!name.starts_with("._"), "AppleDouble non filtré : {}", name);
         }
+    }
+
+    /// Les dossiers de service (_unsorted, _review, _errors) ne sont jamais
+    /// rescannés : en tri sur place ils appartiennent à la destination.
+    #[test]
+    fn test_scan_skips_special_dirs() {
+        let dir = TempDir::new().unwrap();
+        for special in ["_unsorted", "_review", "_errors"] {
+            let sub = dir.path().join(special);
+            fs::create_dir(&sub).unwrap();
+            fs::write(sub.join("track.mp3"), b"fake").unwrap();
+        }
+        let ok = dir.path().join("Album");
+        fs::create_dir(&ok).unwrap();
+        fs::write(ok.join("track.mp3"), b"fake").unwrap();
+
+        let files = scan(dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].starts_with(&ok));
     }
 }

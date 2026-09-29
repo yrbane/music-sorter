@@ -49,7 +49,11 @@ impl DiscogsClient {
             .pool_max_idle_per_host(4)
             .build()?;
 
-        Ok(Self { client, token, rate_limiter })
+        Ok(Self {
+            client,
+            token,
+            rate_limiter,
+        })
     }
 
     /// Recherche en lisant uniquement le cache JSON
@@ -97,7 +101,9 @@ impl DiscogsClient {
 
         // Token transmis en en-tête (jamais dans l'URL), avec retry sur erreurs transitoires.
         let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
-            self.client.get(&url).header("Authorization", self.auth_header())
+            self.client
+                .get(&url)
+                .header("Authorization", self.auth_header())
         }) {
             Some(r) => r,
             None => return Ok(None),
@@ -121,7 +127,9 @@ impl DiscogsClient {
         }
 
         let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
-            self.client.get(resource_url).header("Authorization", self.auth_header())
+            self.client
+                .get(resource_url)
+                .header("Authorization", self.auth_header())
         }) {
             Some(r) => r,
             None => return Ok(None),
@@ -136,7 +144,9 @@ impl DiscogsClient {
     /// Télécharge une image depuis son URL avec authentification Discogs
     pub fn fetch_image(&self, image_url: &str) -> Result<Vec<u8>> {
         let response = match crate::retry::get_with_retry(Some(&self.rate_limiter), || {
-            self.client.get(image_url).header("Authorization", self.auth_header())
+            self.client
+                .get(image_url)
+                .header("Authorization", self.auth_header())
         }) {
             Some(r) => r,
             None => anyhow::bail!("Échec du téléchargement de l'image Discogs : {}", image_url),
@@ -165,9 +175,7 @@ fn build_search_url(artist: &str, album: &str) -> String {
 
 /// Encode les caractères spéciaux pour les paramètres d'URL
 fn url_encode(s: &str) -> String {
-    s.replace(' ', "+")
-        .replace('&', "%26")
-        .replace('?', "%3F")
+    s.replace(' ', "+").replace('&', "%26").replace('?', "%3F")
 }
 
 /// Parse la réponse de recherche Discogs
@@ -199,9 +207,7 @@ fn parse_search_response(resp: &serde_json::Value) -> Option<(TrackInfo, Option<
         .and_then(|g| g.as_str())
         .map(|g| g.to_string());
 
-    let resource_url = first["resource_url"]
-        .as_str()
-        .map(|u| u.to_string());
+    let resource_url = first["resource_url"].as_str().map(|u| u.to_string());
 
     let is_comp = artist
         .as_deref()
@@ -218,6 +224,7 @@ fn parse_search_response(resp: &serde_json::Value) -> Option<(TrackInfo, Option<
         cover_art: None,
         album_artist: None,
         is_compilation: is_comp,
+        normalized: false,
     };
 
     Some((info, resource_url))
@@ -226,9 +233,7 @@ fn parse_search_response(resp: &serde_json::Value) -> Option<(TrackInfo, Option<
 /// Parse les détails complets d'une release Discogs
 fn parse_release_details(resp: &serde_json::Value) -> Option<ReleaseDetails> {
     // L'artiste est dans artists[0].name
-    let artist = resp["artists"][0]["name"]
-        .as_str()
-        .map(|s| s.to_string());
+    let artist = resp["artists"][0]["name"].as_str().map(|s| s.to_string());
 
     let album = resp["title"].as_str().map(|s| s.to_string());
 
@@ -236,11 +241,7 @@ fn parse_release_details(resp: &serde_json::Value) -> Option<ReleaseDetails> {
     let year = resp["year"]
         .as_u64()
         .map(|y| y as u32)
-        .or_else(|| {
-            resp["year"]
-                .as_str()
-                .and_then(|y| y.parse::<u32>().ok())
-        });
+        .or_else(|| resp["year"].as_str().and_then(|y| y.parse::<u32>().ok()));
 
     // Le genre est dans genres[0]
     let genre = resp["genres"]
@@ -273,7 +274,14 @@ fn parse_release_details(resp: &serde_json::Value) -> Option<ReleaseDetails> {
             .map(|u| u.to_string())
     });
 
-    Some(ReleaseDetails { artist, album, year, genre, tracks, cover_url })
+    Some(ReleaseDetails {
+        artist,
+        album,
+        year,
+        genre,
+        tracks,
+        cover_url,
+    })
 }
 
 #[cfg(test)]
@@ -288,7 +296,13 @@ mod tests {
         let key = crate::cache_keys::api_key(&format!("{}|{}", "Boards of Canada", "Geogaddi"));
         cache.record_api("discogs_search", &key, json).unwrap();
 
-        let result = DiscogsClient::search_release_cached(&cache, "Boards of Canada", "Geogaddi", DISCOGS_DEFAULT_CACHE_TTL_SECS).unwrap();
+        let result = DiscogsClient::search_release_cached(
+            &cache,
+            "Boards of Canada",
+            "Geogaddi",
+            DISCOGS_DEFAULT_CACHE_TTL_SECS,
+        )
+        .unwrap();
         assert!(result.is_some());
         let (info, _) = result.unwrap();
         assert_eq!(info.artist, Some("Boards of Canada".into()));
@@ -303,7 +317,9 @@ mod tests {
         let key = crate::cache_keys::api_key(url);
         cache.record_api("discogs_release", &key, json).unwrap();
 
-        let result = DiscogsClient::get_release_details_cached(&cache, url, DISCOGS_DEFAULT_CACHE_TTL_SECS).unwrap();
+        let result =
+            DiscogsClient::get_release_details_cached(&cache, url, DISCOGS_DEFAULT_CACHE_TTL_SECS)
+                .unwrap();
         assert!(result.is_some());
     }
 
@@ -315,7 +331,10 @@ mod tests {
         assert!(url.contains("type=release"), "url = {url}");
         assert!(url.contains("per_page=5"), "url = {url}");
         // Le token ne doit JAMAIS apparaître dans l'URL (surface de fuite en logs).
-        assert!(!url.contains("token"), "le token ne doit pas être dans l'URL : {url}");
+        assert!(
+            !url.contains("token"),
+            "le token ne doit pas être dans l'URL : {url}"
+        );
     }
 
     #[test]

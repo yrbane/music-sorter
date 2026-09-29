@@ -41,8 +41,8 @@ fn strip_one_pass(s: &str) -> String {
 /// et ne supprime jamais l'intégralité de la chaîne.
 fn strip_trailing_domain(s: &str) -> Option<&str> {
     const TLDS: &[&str] = &[
-        ".net", ".com", ".org", ".fr", ".io", ".me", ".to", ".ru", ".co", ".tv",
-        ".fm", ".biz", ".info", ".uk", ".de", ".es", ".it", ".nl",
+        ".net", ".com", ".org", ".fr", ".io", ".me", ".to", ".ru", ".co", ".tv", ".fm", ".biz",
+        ".info", ".uk", ".de", ".es", ".it", ".nl",
     ];
     let trimmed = s.trim_end();
     let last = trimmed.rsplit(char::is_whitespace).next()?;
@@ -163,18 +163,12 @@ mod tests {
 
     #[test]
     fn test_strip_free_download_paren() {
-        assert_eq!(
-            clean_for_search("Bidolibido (FREE DOWNLOAD)"),
-            "Bidolibido"
-        );
+        assert_eq!(clean_for_search("Bidolibido (FREE DOWNLOAD)"), "Bidolibido");
     }
 
     #[test]
     fn test_strip_soundcloud_id_suffix() {
-        assert_eq!(
-            clean_for_search("Wee Kid_260625501_soundcloud"),
-            "Wee Kid"
-        );
+        assert_eq!(clean_for_search("Wee Kid_260625501_soundcloud"), "Wee Kid");
     }
 
     #[test]
